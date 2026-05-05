@@ -6,6 +6,8 @@ import type {
   StreamCallbacks,
 } from "../types";
 import { fetchWithMode } from "../http";
+import { resolveLLMEndpoint } from "../endpoints";
+import { createLLMHeaders } from "../headers";
 
 interface AnthropicMessage {
   role: "user" | "assistant";
@@ -262,9 +264,7 @@ export async function streamAnthropic(
   systemPrompt?: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const raw = config.baseUrl.replace(/\/+$/, "");
-  const hasPath = new URL(raw).pathname !== "/";
-  const url = hasPath ? raw : `${raw}/v1/messages`;
+  const url = resolveLLMEndpoint(config.baseUrl, config.provider, "chat");
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -283,10 +283,7 @@ export async function streamAnthropic(
 
   const response = await fetchWithMode(url, {
     body,
-    headers: {
-      "x-api-key": config.apiKey,
-      "anthropic-version": "2023-06-01",
-    },
+    headers: createLLMHeaders(config.provider, config.apiKey),
     signal,
     requestMode: config.requestMode,
   });

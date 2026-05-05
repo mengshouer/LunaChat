@@ -7,6 +7,8 @@ import type {
 } from "../types";
 import { parseSSEStream } from "../stream-parser";
 import { fetchWithMode } from "../http";
+import { resolveLLMEndpoint } from "../endpoints";
+import { createLLMHeaders } from "../headers";
 
 type OpenAIContentPart =
   | { type: "text"; text: string }
@@ -254,9 +256,7 @@ export async function streamOpenAI(
   systemPrompt?: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const raw = config.baseUrl.replace(/\/+$/, "");
-  const hasPath = new URL(raw).pathname !== "/";
-  const url = hasPath ? raw : `${raw}/v1/chat/completions`;
+  const url = resolveLLMEndpoint(config.baseUrl, config.provider, "chat");
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -270,7 +270,7 @@ export async function streamOpenAI(
 
   const response = await fetchWithMode(url, {
     body,
-    headers: { Authorization: `Bearer ${config.apiKey}` },
+    headers: createLLMHeaders(config.provider, config.apiKey),
     signal,
     requestMode: config.requestMode,
   });

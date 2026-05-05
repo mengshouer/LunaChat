@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { forwardLLMRequest } from "@/lib/llm/server-request";
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,14 +12,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...headers,
-      },
-      body: JSON.stringify(body),
-    });
+    const response = await forwardLLMRequest({ url, headers, body });
 
     if (!response.ok) {
       const errorText = await response.text();

@@ -1,12 +1,18 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Loader2, RefreshCcw } from "lucide-react";
+import { toast } from "sonner";
 import { useSettings, type Settings } from "@/providers/SettingsProvider";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Textarea } from "@/components/ui/textarea";
 import type { SearchProviderId } from "@/lib/tools/net-search/types";
+import { resolveLLMEndpoint } from "@/lib/llm/endpoints";
+import { createLLMHeaders } from "@/lib/llm/headers";
+import { normalizeModels, type ModelListItem } from "@/lib/llm/models";
 
 const SEARCH_PROVIDER_CONFIGS: Record<
   string,
@@ -16,26 +22,128 @@ const SEARCH_PROVIDER_CONFIGS: Record<
   exa: { label: "Exa", apiKeyField: "exaApiKey", apiKeyPlaceholder: "exa-...", baseUrlField: "exaBaseUrl", defaultBaseUrl: "https://api.exa.ai" },
 };
 
-function resolveRequestUrl(baseUrl: string, provider: string): string {
-  if (!baseUrl) return "";
-  const raw = baseUrl.replace(/\/+$/, "");
+const failedModelOrigins = new Set<string>();
+
+function getOrigin(url: string): string {
   try {
-    const hasPath = new URL(raw).pathname !== "/";
-    if (hasPath) return raw;
-    const suffix = provider === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
-    return raw + suffix;
+    return new URL(url).origin;
   } catch {
-    return raw;
+    return url;
   }
 }
 
 export function ProviderForm() {
   const { settings, updateSettings } = useSettings();
+  const [models, setModels] = useState<ModelListItem[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState("");
 
   const requestUrl = useMemo(
-    () => resolveRequestUrl(settings.baseUrl, settings.provider),
+    () => resolveLLMEndpoint(settings.baseUrl, settings.provider, "chat"),
     [settings.baseUrl, settings.provider],
   );
+
+  useEffect(() => {
+    setModels([]);
+    setModelsError("");
+  }, [settings.baseUrl, settings.provider]);
+
+  function getErrorMessage(payload: unknown, status: number): string {
+    if (payload && typeof payload === "object") {
+      const error = (payload as { error?: unknown }).error;
+      if (typeof error === "string" && error.trim()) return error;
+      if (error && typeof error === "object") {
+        const message = (error as { message?: unknown }).message;
+        if (typeof message === "string" && message.trim()) return message;
+      }
+      const message = (payload as { message?: unknown }).message;
+      if (typeof message === "string" && message.trim()) return message;
+    }
+    return `Failed to fetch models (${status})`;
+  }
+
+  async function readModelsResponse(response: Response): Promise<ModelListItem[]> {
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(getErrorMessage(payload, response.status));
+    }
+
+    return normalizeModels(payload);
+  }
+
+  async function fetchModelsFromServer(): Promise<Response> {
+    return fetch("/api/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: settings.provider,
+        baseUrl: settings.baseUrl,
+        apiKey: settings.apiKey,
+      }),
+    });
+  }
+
+  async function fetchModelsFromClient(modelsUrl: string): Promise<Response> {
+    return fetch(modelsUrl, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        ...createLLMHeaders(settings.provider, settings.apiKey),
+      },
+    });
+  }
+
+  async function fetchModels() {
+    if (!settings.baseUrl.trim()) {
+      toast.error("Please set Base URL first");
+      return;
+    }
+
+    setModelsLoading(true);
+    setModelsError("");
+
+    try {
+      const modelsUrl = resolveLLMEndpoint(settings.baseUrl, settings.provider, "models");
+      const origin = getOrigin(modelsUrl);
+      const requestMode = settings.requestMode ?? "auto";
+      let response: Response;
+
+      if (requestMode === "server" || (requestMode === "auto" && failedModelOrigins.has(origin))) {
+        response = await fetchModelsFromServer();
+      } else if (requestMode === "client") {
+        response = await fetchModelsFromClient(modelsUrl);
+      } else {
+        try {
+          response = await fetchModelsFromClient(modelsUrl);
+        } catch {
+          failedModelOrigins.add(origin);
+          response = await fetchModelsFromServer();
+        }
+      }
+
+      const nextModels = (await readModelsResponse(response)).filter((model) => model.id);
+      setModels(nextModels);
+
+      if (nextModels.length === 0) {
+        setModelsError("No models returned by this provider");
+        toast.warning("No models returned");
+        return;
+      }
+
+      if (!settings.model) {
+        updateSettings({ model: nextModels[0].id });
+      }
+
+      toast.success(`Fetched ${nextModels.length} model(s)`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch models";
+      setModelsError(message);
+      toast.error(message);
+    } finally {
+      setModelsLoading(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -62,15 +170,44 @@ export function ProviderForm() {
         <Label htmlFor="model">
           Model <span className="text-destructive">*</span>
         </Label>
-        <Input
-          id="model"
-          placeholder="gpt-4o / claude-sonnet-4-20250514"
-          value={settings.model}
-          onChange={(e) => updateSettings({ model: e.target.value })}
-        />
+        <div className="flex gap-2">
+          <Input
+            id="model"
+            placeholder="gpt-4o / claude-sonnet-4-20250514"
+            value={settings.model}
+            onChange={(e) => updateSettings({ model: e.target.value })}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            onClick={fetchModels}
+            disabled={modelsLoading || !settings.baseUrl.trim()}
+            title="Fetch models"
+          >
+            {modelsLoading ? <Loader2 className="animate-spin" /> : <RefreshCcw />}
+            Fetch
+          </Button>
+        </div>
+        {models.length > 0 && (
+          <select
+            className="border-input bg-background text-sm rounded-md border px-3 py-2 w-full"
+            value={models.some((model) => model.id === settings.model) ? settings.model : ""}
+            onChange={(e) => updateSettings({ model: e.target.value })}
+          >
+            {!models.some((model) => model.id === settings.model) && (
+              <option value="">Select fetched model...</option>
+            )}
+            {models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.name ? `${model.name} (${model.id})` : model.id}
+              </option>
+            ))}
+          </select>
+        )}
         <p className="text-xs text-muted-foreground">
           Provider auto-detected: {settings.provider === "anthropic" ? "Anthropic" : "OpenAI Compatible"}
         </p>
+        {modelsError && <p className="text-xs text-destructive">{modelsError}</p>}
       </div>
 
       <div className="space-y-2">
