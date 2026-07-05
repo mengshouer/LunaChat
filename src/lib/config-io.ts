@@ -1,4 +1,5 @@
 import { db, type Thread, type Message } from "./db";
+import { chainByCreation } from "./message-tree";
 
 const CONFIGS_STORAGE_KEY = "chat-app-configs";
 
@@ -17,7 +18,9 @@ export interface ExportData {
   };
 }
 
-export async function exportData(includeChatData: boolean): Promise<ExportData> {
+export async function exportData(
+  includeChatData: boolean,
+): Promise<ExportData> {
   const raw = localStorage.getItem(CONFIGS_STORAGE_KEY);
   const configs: ConfigsData = raw
     ? JSON.parse(raw)
@@ -111,6 +114,24 @@ export async function applyImport(
     const newMessages = data.chatData.messages.filter(
       (m) => !existingMessageIds.has(m.id),
     );
+
+    // Legacy exports (pre-branching) have no parentId on messages: chain
+    // each newly imported thread linearly and point it at its last message.
+    const msgsByThread = new Map<string, Message[]>();
+    for (const m of newMessages) {
+      const list = msgsByThread.get(m.threadId);
+      if (list) list.push(m);
+      else msgsByThread.set(m.threadId, [m]);
+    }
+    for (const t of newThreads) {
+      const list = msgsByThread.get(t.id);
+      if (!list || list.length === 0) continue;
+      if (list.some((m) => m.parentId !== undefined)) continue;
+      const chained = chainByCreation(list);
+      if (!t.activeLeafId) {
+        t.activeLeafId = chained[chained.length - 1].id;
+      }
+    }
 
     if (newThreads.length > 0) {
       await db.threads.bulkAdd(newThreads);

@@ -1,4 +1,4 @@
-import { RefreshCcw, Copy, CopyCheck } from "lucide-react";
+import { RefreshCcw, Copy, CopyCheck, GitBranch } from "lucide-react";
 import { TooltipIconButton } from "../tooltip-icon-button";
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
@@ -58,12 +58,14 @@ export function CommandBar({
   isHumanMessage,
   isAiMessage,
   handleRegenerate,
+  handleFork,
   isLoading,
 }: {
   content: string;
   isHumanMessage?: boolean;
   isAiMessage?: boolean;
   handleRegenerate?: () => void;
+  handleFork?: () => void;
   isLoading: boolean;
 }) {
   return (
@@ -77,6 +79,16 @@ export function CommandBar({
           onClick={handleRegenerate}
         >
           <RefreshCcw />
+        </TooltipIconButton>
+      )}
+      {isAiMessage && !!handleFork && (
+        <TooltipIconButton
+          disabled={isLoading}
+          tooltip="Fork to new thread"
+          variant="ghost"
+          onClick={handleFork}
+        >
+          <GitBranch />
         </TooltipIconButton>
       )}
     </div>

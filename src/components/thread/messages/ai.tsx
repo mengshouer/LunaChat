@@ -11,6 +11,7 @@ export function AssistantMessage({
   isLoading,
   isLastMessage,
   handleRegenerate,
+  handleFork,
   hideToolCalls,
   toolResultByCallId,
 }: {
@@ -18,6 +19,7 @@ export function AssistantMessage({
   isLoading: boolean;
   isLastMessage: boolean;
   handleRegenerate: () => void;
+  handleFork?: () => void;
   hideToolCalls: boolean;
   toolResultByCallId?: Record<string, Message>;
 }) {
@@ -59,11 +61,12 @@ export function AssistantMessage({
             )}
           </div>
         )}
-        {(!message.content || message.content.length === 0) && !hasToolCalls && (
-          <div className="py-1">
-            <MarkdownText>{"**Error:** Unknown error"}</MarkdownText>
-          </div>
-        )}
+        {(!message.content || message.content.length === 0) &&
+          !hasToolCalls && (
+            <div className="py-1">
+              <MarkdownText>{"**Error:** Unknown error"}</MarkdownText>
+            </div>
+          )}
 
         {!hideToolCalls && hasToolCalls && (
           <ToolCalls
@@ -83,6 +86,7 @@ export function AssistantMessage({
             isLoading={isLoading}
             isAiMessage={true}
             handleRegenerate={isLastMessage ? handleRegenerate : undefined}
+            handleFork={handleFork}
           />
         </div>
       </div>

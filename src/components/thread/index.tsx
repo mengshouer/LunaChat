@@ -88,7 +88,10 @@ export function Thread() {
     sendMessage,
     stopStreaming,
     regenerate,
-    rollbackToMessage,
+    editMessage,
+    switchBranch,
+    branchInfo,
+    forkThreadFromMessage,
   } = useChat();
   const { currentThreadId, createNewThread, refreshThreads } = useThreads();
   const { settings, isConfigured, updateSettings, profiles, activeProfileId, switchProfile, createProfile, deleteProfile, renameProfile, duplicateProfile, reloadConfigs } = useSettings();
@@ -423,14 +426,14 @@ export function Thread() {
                       key={msg.id}
                       message={msg}
                       isStreaming={isStreaming}
-                      onRollback={async () => {
-                        if (!window.confirm("确认回退到此消息？该消息及之后的所有消息将被删除。")) return;
-                        const content = await rollbackToMessage(msg.id);
-                        if (content) {
-                          setInput(content);
-                          textareaRef.current?.focus();
-                        }
-                      }}
+                      onEditSubmit={(newContent) =>
+                        editMessage(msg.id, newContent)
+                      }
+                      branchIndex={branchInfo[msg.id]?.index}
+                      branchCount={branchInfo[msg.id]?.count}
+                      onSwitchBranch={(direction) =>
+                        switchBranch(msg.id, direction)
+                      }
                     />
                   );
                 }
@@ -452,6 +455,7 @@ export function Thread() {
                       idx === messages.length - 1 && !isStreaming
                     }
                     handleRegenerate={handleRegenerate}
+                    handleFork={() => forkThreadFromMessage(msg.id)}
                     hideToolCalls={hideToolCalls}
                     toolResultByCallId={toolResultByCallId}
                   />

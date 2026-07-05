@@ -1,6 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { Attachment } from "./attachments";
-
+import { getActivePath, chainByCreation } from "./message-tree";
 
 export interface Thread {
   id: string;
@@ -8,6 +8,8 @@ export interface Thread {
   configId?: string;
   createdAt: number;
   updatedAt: number;
+  // Last message id of the active branch (message tree via Message.parentId)
+  activeLeafId?: string;
 }
 
 export interface Message {
@@ -22,6 +24,9 @@ export interface Message {
   attachments?: Attachment[];
   reasoningContent?: string;
   thinkingDuration?: number;
+  // Previous message on the same branch; null/undefined = root.
+  // Sibling user messages (same parentId) are alternative branches.
+  parentId?: string | null;
 }
 
 export interface ToolCallData {
@@ -44,6 +49,26 @@ class ChatDB extends Dexie {
     this.version(3).stores({
       threads: "id, configId, createdAt, updatedAt",
     });
+    // v4: message branching — chain existing linear threads via parentId
+    // (createdAt order) and point each thread at its current leaf.
+    this.version(4)
+      .stores({})
+      .upgrade(async (tx) => {
+        const messages = (await tx.table("messages").toArray()) as Message[];
+        const byThread = new Map<string, Message[]>();
+        for (const m of messages) {
+          const list = byThread.get(m.threadId);
+          if (list) list.push(m);
+          else byThread.set(m.threadId, [m]);
+        }
+        for (const [threadId, list] of byThread) {
+          const chained = chainByCreation(list);
+          await tx.table("messages").bulkPut(chained);
+          await tx.table("threads").update(threadId, {
+            activeLeafId: chained[chained.length - 1].id,
+          });
+        }
+      });
   }
 }
 
@@ -55,7 +80,13 @@ export async function createThread(
   configId?: string,
 ): Promise<Thread> {
   const now = Date.now();
-  const thread: Thread = { id, title, createdAt: now, updatedAt: now, ...(configId ? { configId } : {}) };
+  const thread: Thread = {
+    id,
+    title,
+    createdAt: now,
+    updatedAt: now,
+    ...(configId ? { configId } : {}),
+  };
   await db.threads.add(thread);
   return thread;
 }
@@ -70,7 +101,9 @@ export async function getThread(id: string): Promise<Thread | undefined> {
 
 export async function updateThread(
   id: string,
-  updates: Partial<Pick<Thread, "title" | "updatedAt" | "configId">>,
+  updates: Partial<
+    Pick<Thread, "title" | "updatedAt" | "configId" | "activeLeafId">
+  >,
 ): Promise<void> {
   await db.threads.update(id, { ...updates, updatedAt: Date.now() });
 }
@@ -84,7 +117,12 @@ export async function deleteThread(id: string): Promise<void> {
 
 export async function addMessage(message: Message): Promise<void> {
   await db.messages.add(message);
-  await db.threads.update(message.threadId, { updatedAt: Date.now() });
+  // Every message is appended at the end of the active branch, so it always
+  // becomes the new active leaf.
+  await db.threads.update(message.threadId, {
+    updatedAt: Date.now(),
+    activeLeafId: message.id,
+  });
 }
 
 export async function getMessages(threadId: string): Promise<Message[]> {
@@ -94,33 +132,43 @@ export async function getMessages(threadId: string): Promise<Message[]> {
     .toArray();
 }
 
+// Delete the trailing assistant/tool messages of the ACTIVE branch only.
+// Branches fork exclusively at user messages, so this trailing segment never
+// has children on other branches — deleting it cannot orphan sibling branches.
 export async function deleteLastAssistantMessages(
   threadId: string,
 ): Promise<void> {
-  const messages = await getMessages(threadId);
+  const [messages, thread] = await Promise.all([
+    getMessages(threadId),
+    getThread(threadId),
+  ]);
+  const path = getActivePath(messages, thread?.activeLeafId);
   const toDelete: string[] = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
+  for (let i = path.length - 1; i >= 0; i--) {
+    const msg = path[i];
     if (msg.role === "assistant" || msg.role === "tool") {
       toDelete.push(msg.id);
     } else {
       break;
     }
   }
-  if (toDelete.length > 0) {
-    await db.messages.bulkDelete(toDelete);
-  }
+  if (toDelete.length === 0) return;
+  const newLeaf = path[path.length - toDelete.length - 1];
+  await db.messages.bulkDelete(toDelete);
+  await db.threads.update(threadId, {
+    updatedAt: Date.now(),
+    activeLeafId: newLeaf?.id,
+  });
 }
 
-export async function deleteMessagesFrom(
-  threadId: string,
-  messageId: string,
+// Create a new thread containing a copy of a conversation path
+// (used by "fork to new thread" on an assistant message).
+export async function forkThread(
+  thread: Thread,
+  messages: Message[],
 ): Promise<void> {
-  const messages = await getMessages(threadId);
-  const idx = messages.findIndex((m) => m.id === messageId);
-  if (idx === -1) return;
-  const toDelete = messages.slice(idx).map((m) => m.id);
-  if (toDelete.length > 0) {
-    await db.messages.bulkDelete(toDelete);
-  }
+  await db.transaction("rw", [db.threads, db.messages], async () => {
+    await db.threads.add(thread);
+    await db.messages.bulkAdd(messages);
+  });
 }
