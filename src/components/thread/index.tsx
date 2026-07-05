@@ -515,7 +515,7 @@ export function Thread() {
                 variant="ghost"
                 disabled={!isConfigured || isStreaming}
                 onClick={() => fileInputRef.current?.click()}
-                className="shrink-0"
+                className="shrink-0 size-11"
               >
                 <Paperclip className="size-4" />
               </Button>
@@ -535,7 +535,7 @@ export function Thread() {
                       variant="ghost"
                       disabled={!isConfigured}
                       onClick={() => updateSettings({ searchEnabled: !settings.searchEnabled })}
-                      className="shrink-0"
+                      className="shrink-0 size-11"
                     >
                       <Globe
                         className={cn(
@@ -564,7 +564,7 @@ export function Thread() {
                 }
                 disabled={!isConfigured}
                 rows={1}
-                className="flex-1 resize-none rounded-xl border border-input bg-background px-4 py-3 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px] max-h-[200px] overflow-y-auto"
+                className="flex-1 resize-none rounded-xl border border-input bg-background px-4 py-[11px] text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px] max-h-[200px] overflow-y-auto"
                 style={{ fieldSizing: "content" } as React.CSSProperties}
               />
               {isStreaming ? (
@@ -573,7 +573,7 @@ export function Thread() {
                   size="icon"
                   variant="destructive"
                   onClick={stopStreaming}
-                  className="shrink-0"
+                  className="shrink-0 size-11"
                 >
                   <Square className="size-4" />
                 </Button>
@@ -582,7 +582,7 @@ export function Thread() {
                   type="submit"
                   size="icon"
                   disabled={(!input.trim() && pendingAttachments.length === 0) || !isConfigured}
-                  className="shrink-0"
+                  className="shrink-0 size-11"
                 >
                   <Send className="size-4" />
                 </Button>
