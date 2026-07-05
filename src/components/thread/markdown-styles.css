@@ -1,12 +1,12 @@
 .markdown-content code:not(pre code) {
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: var(--muted);
   padding: 0.2em 0.4em;
   border-radius: 3px;
   font-size: 0.9em;
 }
 
 .markdown-content a {
-  color: #0070f3;
+  color: var(--primary);
   text-decoration: none;
 }
 
@@ -15,9 +15,9 @@
 }
 
 .markdown-content blockquote {
-  border-left: 4px solid #ddd;
+  border-left: 4px solid var(--border);
   padding-left: 1rem;
-  color: #666;
+  color: var(--muted-foreground);
 }
 
 .markdown-content pre {
@@ -31,14 +31,14 @@
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   padding: 8px;
 }
 
 .markdown-content th {
-  background-color: #f2f2f2;
+  background-color: var(--muted);
 }
 
 .markdown-content tr:nth-child(even) {
-  background-color: #f9f9f9;
+  background-color: color-mix(in oklab, var(--muted) 50%, transparent);
 }

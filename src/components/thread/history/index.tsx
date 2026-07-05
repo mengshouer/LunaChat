@@ -34,7 +34,7 @@ function ThreadList({
   getProfileName: (configId?: string) => string | null;
 }) {
   return (
-    <div className="h-full flex flex-col w-full gap-1 items-start justify-start overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent">
+    <div className="h-full flex flex-col w-full gap-1 items-start justify-start overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
       {threads.map((t) => {
         const profileName = getProfileName(t.configId);
         return (
@@ -117,10 +117,10 @@ export default function ThreadHistory({
     <>
       {/* Desktop sidebar */}
       {isOpen && isLargeScreen && (
-        <div className="hidden lg:flex flex-col border-r-[1px] border-slate-300 items-start justify-start gap-4 h-screen w-[300px] shrink-0 shadow-inner-right">
+        <div className="hidden lg:flex flex-col border-r-[1px] border-border items-start justify-start gap-4 h-screen w-[300px] shrink-0 shadow-inner-right">
           <div className="flex items-center justify-between w-full pt-1.5 px-4">
             <Button
-              className="hover:bg-gray-100"
+              className="hover:bg-muted"
               variant="ghost"
               onClick={onToggle}
             >
@@ -128,7 +128,7 @@ export default function ThreadHistory({
             </Button>
             <h1 className="text-lg font-semibold tracking-tight">History</h1>
             <Button
-              className="hover:bg-gray-100"
+              className="hover:bg-muted"
               variant="ghost"
               onClick={() => createNewThread()}
             >

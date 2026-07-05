@@ -22,6 +22,8 @@ import {
   Upload,
   RotateCcw,
   MoreHorizontal,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -38,6 +40,7 @@ import { Label } from "@/components/ui/label";
 import { useChat } from "@/providers/ChatProvider";
 import { useThreads } from "@/providers/ThreadProvider";
 import { useSettings } from "@/providers/SettingsProvider";
+import { useTheme } from "@/providers/ThemeProvider";
 import type { Message as DBMessage } from "@/lib/db";
 import type { PendingAttachment } from "@/lib/attachments";
 import { HumanMessage } from "./messages/human";
@@ -89,6 +92,7 @@ export function Thread() {
   } = useChat();
   const { currentThreadId, createNewThread, refreshThreads } = useThreads();
   const { settings, isConfigured, updateSettings, profiles, activeProfileId, switchProfile, createProfile, deleteProfile, renameProfile, duplicateProfile, reloadConfigs } = useSettings();
+  const { resolvedTheme, toggleTheme } = useTheme();
   const [input, setInput] = useState("");
   const [renamingProfile, setRenamingProfile] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -334,6 +338,18 @@ export function Thread() {
                 </>
               )}
             </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              title={resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {resolvedTheme === "dark" ? (
+                <Sun className="size-5" />
+              ) : (
+                <Moon className="size-5" />
+              )}
+            </Button>
             <Button
               variant="ghost"
               size="icon"
