@@ -2,7 +2,6 @@
 
 import { Button } from "@/components/ui/button";
 import { useThreads } from "@/providers/ThreadProvider";
-import { useSettings } from "@/providers/SettingsProvider";
 import type { Thread } from "@/lib/db";
 import {
   Sheet,
@@ -25,51 +24,41 @@ function ThreadList({
   currentThreadId,
   onThreadClick,
   onDeleteThread,
-  getProfileName,
 }: {
   threads: Thread[];
   currentThreadId: string | null;
   onThreadClick: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
-  getProfileName: (configId?: string) => string | null;
 }) {
   return (
     <div className="h-full flex flex-col w-full gap-1 items-start justify-start overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
-      {threads.map((t) => {
-        const profileName = getProfileName(t.configId);
-        return (
-          <div key={t.id} className="w-full px-1 group flex items-center">
-            <Button
-              variant="ghost"
-              className={cn(
-                "text-left items-start justify-start font-normal flex-1 min-w-0",
-                currentThreadId === t.id && "bg-accent",
-              )}
-              onClick={() => onThreadClick(t.id)}
-            >
-              <div className="flex flex-col min-w-0">
-                <p className="truncate text-ellipsis">{t.title}</p>
-                {profileName && (
-                  <span className="text-[10px] text-muted-foreground truncate">
-                    {profileName}
-                  </span>
-                )}
-              </div>
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-6 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDeleteThread(t.id);
-              }}
-            >
-              <Trash2 className="size-3" />
-            </Button>
-          </div>
-        );
-      })}
+      {threads.map((t) => (
+        <div key={t.id} className="w-full px-1 group flex items-center">
+          <Button
+            variant="ghost"
+            className={cn(
+              "text-left items-start justify-start font-normal flex-1 min-w-0",
+              currentThreadId === t.id && "bg-accent",
+            )}
+            onClick={() => onThreadClick(t.id)}
+          >
+            <div className="flex flex-col min-w-0">
+              <p className="truncate text-ellipsis">{t.title}</p>
+            </div>
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDeleteThread(t.id);
+            }}
+          >
+            <Trash2 className="size-3" />
+          </Button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -100,13 +89,6 @@ export default function ThreadHistory({
     createNewThread,
     removeThread,
   } = useThreads();
-  const { getProfileById, profiles } = useSettings();
-
-  const getProfileName = (configId?: string): string | null => {
-    if (!configId || profiles.length <= 1) return null;
-    const profile = getProfileById(configId);
-    return profile ? profile.name : null;
-  };
 
   const handleThreadClick = (id: string) => {
     switchThread(id);
@@ -143,7 +125,6 @@ export default function ThreadHistory({
               currentThreadId={currentThreadId}
               onThreadClick={handleThreadClick}
               onDeleteThread={removeThread}
-              getProfileName={getProfileName}
             />
           )}
         </div>
@@ -173,7 +154,6 @@ export default function ThreadHistory({
               currentThreadId={currentThreadId}
               onThreadClick={handleThreadClick}
               onDeleteThread={removeThread}
-              getProfileName={getProfileName}
             />
           </SheetContent>
         </Sheet>
