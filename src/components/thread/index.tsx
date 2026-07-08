@@ -37,7 +37,11 @@ import { useThreads } from "@/providers/ThreadProvider";
 import { useSettings } from "@/providers/SettingsProvider";
 import { useTheme } from "@/providers/ThemeProvider";
 import type { Message as DBMessage } from "@/lib/db";
-import type { PendingAttachment } from "@/lib/attachments";
+import {
+  extractClipboardFiles,
+  toPendingAttachments,
+  type PendingAttachment,
+} from "@/lib/attachments";
 import { HumanMessage } from "./messages/human";
 import {
   AssistantMessage,
@@ -115,11 +119,7 @@ export function Thread() {
   }, [messages]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
-    const newItems: PendingAttachment[] = Array.from(files).map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setPendingAttachments((prev) => [...prev, ...newItems]);
+    setPendingAttachments((prev) => [...prev, ...toPendingAttachments(files)]);
   }, []);
 
   const removeAttachment = useCallback((index: number) => {
@@ -128,6 +128,16 @@ export function Thread() {
       return prev.filter((_, i) => i !== index);
     });
   }, []);
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const files = extractClipboardFiles(e.clipboardData);
+      if (files.length === 0) return;
+      e.preventDefault();
+      addFiles(files);
+    },
+    [addFiles],
+  );
 
   const handleSubmit = useCallback(
     async (e?: React.FormEvent) => {
@@ -471,7 +481,10 @@ export function Thread() {
                 type="file"
                 multiple
                 className="hidden"
-                onChange={(e) => e.target.files && addFiles(e.target.files)}
+                onChange={(e) => {
+                  if (e.target.files) addFiles(e.target.files);
+                  e.target.value = "";
+                }}
               />
               <Button
                 type="button"
@@ -521,6 +534,7 @@ export function Thread() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 placeholder={
                   isConfigured
                     ? "Send a message... (Shift+Enter for newline)"
