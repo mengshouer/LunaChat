@@ -16,6 +16,13 @@ export interface PendingAttachment {
   previewUrl: string; // object URL for local preview
 }
 
+// Result of editing a user message's attachments: originals the user kept
+// plus files newly added in the editor.
+export interface AttachmentEdit {
+  kept: Attachment[];
+  added: PendingAttachment[];
+}
+
 // Files extracted from a paste clipboard. Returns [] when the clipboard also
 // carries text/plain（复制 Excel/Word 内容时剪贴板会附带一张渲染位图，
 // 不应被抢占成图片附件，此时走默认文本粘贴）。

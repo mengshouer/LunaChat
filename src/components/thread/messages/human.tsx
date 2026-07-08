@@ -1,16 +1,67 @@
-import { useState, type CSSProperties } from "react";
-import { Pencil, FileText, ChevronLeft, ChevronRight } from "lucide-react";
+import { useState, useRef, useEffect, type CSSProperties } from "react";
+import {
+  Pencil,
+  FileText,
+  ChevronLeft,
+  ChevronRight,
+  Paperclip,
+  X,
+} from "lucide-react";
 import type { Message } from "@/lib/db";
+import {
+  extractClipboardFiles,
+  toPendingAttachments,
+  type Attachment,
+  type AttachmentEdit,
+  type PendingAttachment,
+} from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
 import { TooltipIconButton } from "../tooltip-icon-button";
 
 interface HumanMessageProps {
   message: Message;
   isStreaming?: boolean;
-  onEditSubmit?: (newContent: string) => void;
+  onEditSubmit?: (newContent: string, attachmentEdit: AttachmentEdit) => void;
   branchIndex?: number;
   branchCount?: number;
   onSwitchBranch?: (direction: "prev" | "next") => void;
+}
+
+// Removable attachment thumbnail shown while editing a message
+function AttachmentThumb({
+  isImage,
+  url,
+  name,
+  onRemove,
+}: {
+  isImage: boolean;
+  url: string;
+  name: string;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="relative group">
+      {isImage ? (
+        <img
+          src={url}
+          alt={name}
+          className="h-16 w-16 object-cover rounded-lg border"
+        />
+      ) : (
+        <div className="flex items-center gap-1.5 h-16 px-3 rounded-lg border bg-muted text-sm max-w-[160px]">
+          <FileText className="size-4 shrink-0 text-muted-foreground" />
+          <span className="truncate">{name}</span>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 size-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        <X className="size-2.5" />
+      </button>
+    </div>
+  );
 }
 
 export function HumanMessage({
@@ -24,29 +75,102 @@ export function HumanMessage({
   const attachments = message.attachments ?? [];
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [draftKept, setDraftKept] = useState<Attachment[]>([]);
+  const [draftAdded, setDraftAdded] = useState<PendingAttachment[]>([]);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Mirror of draftAdded so preview object URLs can be revoked when the
+  // component unmounts mid-edit (e.g. switching threads or branches).
+  const draftAddedRef = useRef<PendingAttachment[]>([]);
+  useEffect(() => {
+    draftAddedRef.current = draftAdded;
+  }, [draftAdded]);
+  useEffect(
+    () => () => {
+      draftAddedRef.current.forEach((pa) => URL.revokeObjectURL(pa.previewUrl));
+    },
+    [],
+  );
 
   const startEdit = () => {
     setDraft(message.content);
+    setDraftKept(attachments);
+    setDraftAdded([]);
     setIsEditing(true);
   };
 
-  const submitEdit = () => {
-    const trimmed = draft.trim();
-    if (!trimmed) return;
+  const cancelEdit = () => {
+    draftAdded.forEach((pa) => URL.revokeObjectURL(pa.previewUrl));
+    setDraftAdded([]);
     setIsEditing(false);
-    onEditSubmit?.(trimmed);
+  };
+
+  const addEditFiles = (files: FileList | File[]) => {
+    setDraftAdded((prev) => [...prev, ...toPendingAttachments(files)]);
+  };
+
+  const removeKept = (index: number) => {
+    setDraftKept((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const removeAdded = (index: number) => {
+    setDraftAdded((prev) => {
+      URL.revokeObjectURL(prev[index].previewUrl);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const hasDraftContent = (trimmed: string) =>
+    !!trimmed || draftKept.length > 0 || draftAdded.length > 0;
+
+  const submitEdit = () => {
+    // Keep the edit open while streaming — editMessage would silently
+    // drop the draft otherwise.
+    if (isStreaming) return;
+    const trimmed = draft.trim();
+    if (!hasDraftContent(trimmed)) return;
+    setIsEditing(false);
+    onEditSubmit?.(trimmed, { kept: draftKept, added: draftAdded });
   };
 
   if (isEditing) {
     return (
       <div className="flex flex-col gap-2 items-end ml-auto w-full max-w-xl">
+        {(draftKept.length > 0 || draftAdded.length > 0) && (
+          <div className="flex flex-wrap gap-2 justify-end">
+            {draftKept.map((a, i) => (
+              <AttachmentThumb
+                key={a.id}
+                isImage={a.kind === "image"}
+                url={a.url}
+                name={a.name}
+                onRemove={() => removeKept(i)}
+              />
+            ))}
+            {draftAdded.map((pa, i) => (
+              <AttachmentThumb
+                key={pa.previewUrl}
+                isImage={pa.file.type.startsWith("image/")}
+                url={pa.previewUrl}
+                name={pa.file.name}
+                onRemove={() => removeAdded(i)}
+              />
+            ))}
+          </div>
+        )}
         <textarea
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onPaste={(e) => {
+            const files = extractClipboardFiles(e.clipboardData);
+            if (files.length === 0) return;
+            e.preventDefault();
+            addEditFiles(files);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
-              setIsEditing(false);
+              cancelEdit();
             } else if (
               e.key === "Enter" &&
               !e.shiftKey &&
@@ -61,19 +185,33 @@ export function HumanMessage({
           style={{ fieldSizing: "content" } as CSSProperties}
         />
         <div className="flex gap-2">
+          <input
+            ref={editFileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) addEditFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => setIsEditing(false)}
+            title="Add attachment"
+            onClick={() => editFileInputRef.current?.click()}
           >
+            <Paperclip className="size-3.5" />
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={cancelEdit}>
             Cancel
           </Button>
           <Button
             type="button"
             size="sm"
             onClick={submitEdit}
-            disabled={!draft.trim()}
+            disabled={isStreaming || !hasDraftContent(draft.trim())}
           >
             Send
           </Button>

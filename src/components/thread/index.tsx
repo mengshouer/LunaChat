@@ -380,8 +380,8 @@ export function Thread() {
                       key={msg.id}
                       message={msg}
                       isStreaming={isStreaming}
-                      onEditSubmit={(newContent) =>
-                        editMessage(msg.id, newContent)
+                      onEditSubmit={(newContent, attachmentEdit) =>
+                        editMessage(msg.id, newContent, attachmentEdit)
                       }
                       branchIndex={branchInfo[msg.id]?.index}
                       branchCount={branchInfo[msg.id]?.count}

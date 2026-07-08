@@ -24,7 +24,11 @@ import {
 } from "@/lib/db";
 import { getActivePath, getSiblings, findLatestLeaf } from "@/lib/message-tree";
 import { uploadAttachments } from "@/lib/attachment-storage";
-import type { Attachment, PendingAttachment } from "@/lib/attachments";
+import type {
+  Attachment,
+  AttachmentEdit,
+  PendingAttachment,
+} from "@/lib/attachments";
 import { runReactLoop } from "@/lib/react-loop";
 import { createToolRegistry } from "@/lib/tools/registry";
 import { buildSystemPrompt, DEFAULT_SYSTEM_PROMPT } from "@/lib/prompts";
@@ -49,7 +53,11 @@ interface ChatContextValue {
   sendMessage: (input: SendMessageInput) => Promise<void>;
   stopStreaming: () => void;
   regenerate: () => Promise<void>;
-  editMessage: (messageId: string, newContent: string) => Promise<void>;
+  editMessage: (
+    messageId: string,
+    newContent: string,
+    attachmentEdit?: AttachmentEdit,
+  ) => Promise<void>;
   switchBranch: (
     messageId: string,
     direction: "prev" | "next",
@@ -499,14 +507,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     ],
   );
 
-  // Edit a previous user message: create a sibling branch (same parentId,
-  // attachments carried over) and generate a new reply on it.
+  // Edit a previous user message: create a sibling branch and generate a new
+  // reply on it. Without attachmentEdit the original attachments carry over;
+  // with it, the new message gets kept originals + newly uploaded files.
   const editMessage = useCallback(
-    async (messageId: string, newContent: string) => {
+    async (
+      messageId: string,
+      newContent: string,
+      attachmentEdit?: AttachmentEdit,
+    ) => {
       if (isStreaming || !currentThreadId) return;
       const threadId = currentThreadId;
       const original = allMessages.find((m) => m.id === messageId);
       if (!original || original.role !== "user") return;
+
+      let attachments = original.attachments ?? [];
+      if (attachmentEdit) {
+        const uploaded =
+          attachmentEdit.added.length > 0
+            ? await uploadAttachments(attachmentEdit.added)
+            : [];
+        attachments = [...attachmentEdit.kept, ...uploaded];
+      }
 
       const newMsg: DBMessage = {
         id: uuidv4(),
@@ -515,9 +537,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         content: newContent,
         createdAt: Date.now(),
         parentId: original.parentId ?? null,
-        ...(original.attachments && original.attachments.length > 0
-          ? { attachments: original.attachments }
-          : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
       };
       await addMessage(newMsg);
       setAllMessages((prev) => [...prev, newMsg]);
