@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProviderForm, ToolsForm } from "./provider-form";
+import { ProfileManager } from "./profile-manager";
 
 export function SettingsPanel({
   open,
@@ -27,6 +28,7 @@ export function SettingsPanel({
           </SheetDescription>
         </SheetHeader>
         <div className="px-4 pb-4">
+          <ProfileManager />
           <Tabs defaultValue="provider">
             <TabsList className="w-full">
               <TabsTrigger value="provider" className="flex-1">Provider</TabsTrigger>

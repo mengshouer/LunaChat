@@ -14,10 +14,6 @@ import {
   X,
   FileText,
   Globe,
-  Pencil,
-  Copy,
-  Trash2,
-  Check,
   Download,
   Upload,
   RotateCcw,
@@ -25,7 +21,6 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,11 +89,9 @@ export function Thread() {
     forkThreadFromMessage,
   } = useChat();
   const { currentThreadId, createNewThread, refreshThreads } = useThreads();
-  const { settings, isConfigured, updateSettings, profiles, activeProfileId, switchProfile, createProfile, deleteProfile, renameProfile, duplicateProfile, reloadConfigs } = useSettings();
+  const { settings, isConfigured, updateSettings, profiles, activeProfileId, switchProfile, reloadConfigs } = useSettings();
   const { resolvedTheme, toggleTheme } = useTheme();
   const [input, setInput] = useState("");
-  const [renamingProfile, setRenamingProfile] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [hideToolCalls, setHideToolCalls] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(true);
@@ -245,101 +238,52 @@ export function Thread() {
                 Hide tools
               </Label>
             </div>
-            {/* Profile selector + actions */}
+            {/* Profile switcher */}
             <div className="flex items-center gap-1">
-              {renamingProfile ? (
-                <Input
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && renameValue.trim()) {
-                      renameProfile(activeProfileId!, renameValue.trim());
-                      setRenamingProfile(false);
-                    }
-                    if (e.key === "Escape") setRenamingProfile(false);
-                  }}
-                  className="h-7 text-xs w-[120px]"
-                  autoFocus
-                />
-              ) : (
-                <select
-                  className="border-input bg-background text-xs rounded-md border px-2 py-1 max-w-[140px] truncate"
-                  value={activeProfileId ?? ""}
-                  onChange={(e) => switchProfile(e.target.value)}
-                >
-                  {profiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {renamingProfile ? (
-                <>
-                  <Button variant="ghost" size="icon" className="size-7" onClick={() => {
-                    if (renameValue.trim()) renameProfile(activeProfileId!, renameValue.trim());
-                    setRenamingProfile(false);
-                  }}>
-                    <Check className="size-3.5" />
+              <select
+                className="border-input bg-background text-xs rounded-md border px-2 py-1 max-w-[140px] truncate"
+                value={activeProfileId ?? ""}
+                onChange={(e) => switchProfile(e.target.value)}
+              >
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="size-7" title="More actions">
+                    <MoreHorizontal className="size-3.5" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="size-7" onClick={() => setRenamingProfile(false)}>
-                    <X className="size-3.5" />
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button variant="ghost" size="icon" className="size-7" title="Rename" onClick={() => {
-                    const active = profiles.find((p) => p.id === activeProfileId);
-                    if (active) { setRenameValue(active.name); setRenamingProfile(true); }
-                  }}>
-                    <Pencil className="size-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="size-7" title="New profile" onClick={() => createProfile()}>
-                    <Plus className="size-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="size-7" title="Duplicate" onClick={() => activeProfileId && duplicateProfile(activeProfileId)}>
-                    <Copy className="size-3.5" />
-                  </Button>
-                  {profiles.length > 1 && (
-                    <Button variant="ghost" size="icon" className="size-7 text-destructive" title="Delete" onClick={() => activeProfileId && deleteProfile(activeProfileId)}>
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  )}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="size-7" title="More actions">
-                        <MoreHorizontal className="size-3.5" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => setShowExportPanel((v) => !v)}>
-                        <Download className="size-3.5 mr-2" />
-                        Export
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => importInputRef.current?.click()}>
-                        <Upload className="size-3.5 mr-2" />
-                        Import
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem className="text-destructive" onClick={handleReset}>
-                        <RotateCcw className="size-3.5 mr-2" />
-                        Reset All Data
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  <input
-                    ref={importInputRef}
-                    type="file"
-                    accept=".json"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleImportFile(file);
-                      e.target.value = "";
-                    }}
-                  />
-                </>
-              )}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setShowExportPanel((v) => !v)}>
+                    <Download className="size-3.5 mr-2" />
+                    Export
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => importInputRef.current?.click()}>
+                    <Upload className="size-3.5 mr-2" />
+                    Import
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive" onClick={handleReset}>
+                    <RotateCcw className="size-3.5 mr-2" />
+                    Reset All Data
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleImportFile(file);
+                  e.target.value = "";
+                }}
+              />
             </div>
             <Button
               variant="ghost"
