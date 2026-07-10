@@ -40,6 +40,17 @@ export function AssistantMessage({
   const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
   const isErrorMessage = message.name === "error";
 
+  // Tool-call-only step: nothing visible remains when tools are hidden,
+  // so skip entirely instead of leaving an empty block in the gap-4 list.
+  if (
+    hideToolCalls &&
+    hasToolCalls &&
+    !message.content &&
+    !message.reasoningContent
+  ) {
+    return null;
+  }
+
   return (
     <div className="flex items-start mr-auto gap-2 group">
       <div className="flex flex-col gap-2 max-w-full break-words">
