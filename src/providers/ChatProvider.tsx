@@ -141,6 +141,12 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Thread being created by an in-flight sendMessage. The thread-change
+  // effect must not reload it concurrently: that read can land between
+  // addMessage's two DB writes and race the local append into a
+  // duplicated first message (ghost 1/2 branch switcher).
+  const creatingThreadRef = useRef<string | null>(null);
+
   const currentThreadIdRef = useRef(currentThreadId);
   useEffect(() => {
     currentThreadIdRef.current = currentThreadId;
@@ -190,6 +196,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     setActiveLeafId(thread?.activeLeafId);
   }, []);
 
+  // Append a freshly persisted message to local state unless a concurrent
+  // reload already delivered it (reloads race the manual appends).
+  const appendMessageLocal = useCallback((msg: DBMessage) => {
+    setAllMessages((prev) =>
+      prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
+    );
+    setActiveLeafId(msg.id);
+  }, []);
+
   // Load messages and restore streaming state when thread changes
   useEffect(() => {
     setError(null);
@@ -218,6 +233,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       setThinkingStartTime(null);
       setStreamingToolCalls([]);
     }
+    // Skip the initial reload of a thread sendMessage is creating right
+    // now — sendMessage maintains local state itself for that thread.
+    if (creatingThreadRef.current === currentThreadId) return;
     reloadThread(currentThreadId).catch(console.error);
   }, [currentThreadId, reloadThread]);
 
@@ -254,8 +272,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         await addMessage(msg);
         lastMsgId = msg.id;
         if (isCurrentThread()) {
-          setAllMessages((prev) => [...prev, msg]);
-          setActiveLeafId(msg.id);
+          appendMessageLocal(msg);
         }
       };
 
@@ -441,7 +458,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [settings, reloadThread],
+    [settings, reloadThread, appendMessageLocal],
   );
 
   const sendMessage = useCallback(
@@ -456,6 +473,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       let priorPath: DBMessage[] = [];
       if (!threadId) {
         threadId = await createNewThread(activeProfileId ?? undefined);
+        creatingThreadRef.current = threadId;
       } else {
         const [existing, thread] = await Promise.all([
           getMessages(threadId),
@@ -482,8 +500,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         ...(attachments.length > 0 ? { attachments } : {}),
       };
       await addMessage(userMsg);
-      setAllMessages((prev) => [...prev, userMsg]);
-      setActiveLeafId(userMsg.id);
+      appendMessageLocal(userMsg);
+      creatingThreadRef.current = null;
 
       // Auto-generate title from first message
       if (priorPath.length === 0) {
@@ -504,6 +522,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       updateThreadTitle,
       activeProfileId,
       runAssistantTurn,
+      appendMessageLocal,
     ],
   );
 
@@ -540,14 +559,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         ...(attachments.length > 0 ? { attachments } : {}),
       };
       await addMessage(newMsg);
-      setAllMessages((prev) => [...prev, newMsg]);
-      setActiveLeafId(newMsg.id);
+      appendMessageLocal(newMsg);
 
       const fresh = await getMessages(threadId);
       const path = getActivePath(fresh, newMsg.id);
       await runAssistantTurn(threadId, buildHistory(path), newMsg.id);
     },
-    [isStreaming, currentThreadId, allMessages, runAssistantTurn],
+    [isStreaming, currentThreadId, allMessages, runAssistantTurn, appendMessageLocal],
   );
 
   // Switch to the previous/next sibling branch at the given message,
