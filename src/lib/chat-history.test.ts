@@ -191,6 +191,42 @@ describe("normalizeHistoryPath", () => {
     expect(normalizeHistoryPath(path).map((m) => m.id)).toEqual(["u1"]);
   });
 
+  it("drops an assistant message with blank content and no tool calls", () => {
+    // A thinking-only partial persisted by Stop: reasoning but no content.
+    const path = [
+      msg({ id: "u1", role: "user", content: "hi" }),
+      msg({
+        id: "p1",
+        role: "assistant",
+        content: "",
+        reasoningContent: "half a thought",
+      }),
+      msg({ id: "u2", role: "user", content: "go on" }),
+    ];
+    expect(normalizeHistoryPath(path).map((m) => m.id)).toEqual(["u1", "u2"]);
+  });
+
+  it("drops a whitespace-only assistant message", () => {
+    const path = [
+      msg({ id: "u1", role: "user", content: "hi" }),
+      msg({ id: "p1", role: "assistant", content: "  \n\t " }),
+    ];
+    expect(normalizeHistoryPath(path).map((m) => m.id)).toEqual(["u1"]);
+  });
+
+  it("keeps an empty-content assistant carrier that has tool calls", () => {
+    const path = [
+      msg({ id: "u1", role: "user" }),
+      carrier("a1", [{ id: "tc1", name: "net_search" }]),
+      tool("t1", "tc1"),
+    ];
+    expect(normalizeHistoryPath(path).map((m) => m.id)).toEqual([
+      "u1",
+      "a1",
+      "t1",
+    ]);
+  });
+
   it("keeps an orphan tool message (no carrier) in place", () => {
     const path = [
       msg({ id: "u1", role: "user" }),

@@ -399,6 +399,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
               updateStreamingToolCalls(tcs);
             },
             onAssistantMessage: async (aMsg) => {
+              // Nothing streamed at all (no text, no tool calls, no thinking):
+              // don't persist an empty bubble; just clear the partial snapshot.
+              if (
+                !aMsg.content &&
+                !aMsg.toolCalls?.length &&
+                !aMsg.reasoningContent
+              ) {
+                resetTurnState();
+                return;
+              }
               const dbMsg: DBMessage = {
                 id: uuidv4(),
                 threadId,

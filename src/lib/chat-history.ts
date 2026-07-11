@@ -5,6 +5,9 @@ import type { Attachment } from "./attachments";
 // Normalizes a persisted active-branch path into a valid LLM replay sequence:
 //   1. Drops error messages (persisted assistant messages with name==="error")
 //      so error text is never fed back to the model.
+//   1b. Drops assistant messages with no replayable payload (blank content and
+//      no toolCalls — e.g. a thinking-only partial persisted by Stop; reasoning
+//      is never replayed). Anthropic rejects empty mid-history messages.
 //   2. Reorders tolerated legacy data: a tool message is placed immediately
 //      after the assistant message whose toolCalls claim its toolCallId, even
 //      if it was persisted before that carrier (the pre-fix bug ordering).
@@ -14,9 +17,15 @@ import type { Attachment } from "./attachments";
 // New correctly-ordered data passes through unchanged (idempotent). Orphan
 // tool messages (no carrier) keep their original position.
 export function normalizeHistoryPath(path: DBMessage[]): DBMessage[] {
-  const filtered = path.filter(
-    (m) => !(m.role === "assistant" && m.name === "error"),
-  );
+  const filtered = path.filter((m) => {
+    if (m.role !== "assistant") return true;
+    // Drop persisted error bubbles.
+    if (m.name === "error") return false;
+    // Drop assistant messages with nothing to replay: blank content and no
+    // tool calls (a thinking-only Stop partial, or an empty final turn).
+    if (!m.content.trim() && !m.toolCalls?.length) return false;
+    return true;
+  });
 
   // First tool message per toolCallId.
   const toolByCallId = new Map<string, DBMessage>();
