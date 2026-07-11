@@ -125,6 +125,8 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateThreadTitle,
     switchThread,
     refreshThreads,
+    threads,
+    isLoading: threadsLoading,
   } = useThreads();
   const { settings, activeProfileId } = useSettings();
   const [allMessages, setAllMessages] = useState<DBMessage[]>([]);
@@ -250,6 +252,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       !!threadId && streamingStateMap.current.has(threadId),
     [],
   );
+
+  // Abort and clean up streams whose thread was deleted, so a background
+  // turn stops writing orphan messages into a removed thread.
+  useEffect(() => {
+    if (threadsLoading) return;
+    const alive = new Set(threads.map((t) => t.id));
+    for (const id of abortMap.current.keys()) {
+      if (alive.has(id) || creatingThreadRef.current === id) continue;
+      abortMap.current.get(id)?.abort();
+      abortMap.current.delete(id);
+      streamingStateMap.current.delete(id);
+    }
+  }, [threads, threadsLoading]);
 
   // Stop only the currently visible thread's stream; background streams on
   // other threads keep running and stay stoppable when switched back to.
