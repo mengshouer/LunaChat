@@ -72,6 +72,10 @@ interface SettingsContextValue {
   disableEncryption: () => Promise<void>;
   changePassphrase: (passphrase: string) => Promise<void>;
   resetEncryption: () => void;
+  // Encrypt a key value the way persist() would (identity when encryption is
+  // off). Used by the import path, which writes localStorage directly.
+  // Throws while locked.
+  encryptForStorage: (value: string) => Promise<string>;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -492,6 +496,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     persist(profiles, activeProfileId);
   }, [profiles, activeProfileId, persist]);
 
+  const encryptForStorage = useCallback(async (value: string) => {
+    if (!encryptionRef.current) return value;
+    const key = cryptoKeyRef.current;
+    if (!key) throw new Error("Unlock first");
+    return value && !isEncrypted(value) ? encryptString(key, value) : value;
+  }, []);
+
   // Forgot passphrase: keys are unrecoverable by design — clear them and
   // turn encryption off. Everything else (profiles, chats) stays intact.
   const resetEncryption = useCallback(() => {
@@ -538,6 +549,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         disableEncryption,
         changePassphrase,
         resetEncryption,
+        encryptForStorage,
       }}
     >
       {children}

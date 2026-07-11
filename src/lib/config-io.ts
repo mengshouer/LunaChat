@@ -1,10 +1,21 @@
 import { db, type Thread, type Message } from "./db";
 import { chainByCreation } from "./message-tree";
+import { encryptJson, decryptJson } from "./crypto";
+import type { ConfigProfile } from "@/providers/SettingsProvider";
 
 const CONFIGS_STORAGE_KEY = "chat-app-configs";
 
+const KEY_FIELDS = ["apiKey", "exaApiKey", "tavilyApiKey"] as const;
+
 interface ConfigsData {
   profiles: Array<Record<string, unknown>>;
+  activeProfileId: string | null;
+}
+
+// Plaintext key values live only in SettingsProvider state (localStorage may
+// hold ciphertext), so exports take the provider's in-memory snapshot.
+export interface ConfigsSnapshot {
+  profiles: ConfigProfile[];
   activeProfileId: string | null;
 }
 
@@ -18,18 +29,33 @@ export interface ExportData {
   };
 }
 
-export async function exportData(
-  includeChatData: boolean,
-): Promise<ExportData> {
-  const raw = localStorage.getItem(CONFIGS_STORAGE_KEY);
-  const configs: ConfigsData = raw
-    ? JSON.parse(raw)
-    : { profiles: [], activeProfileId: null };
+// Whole-file encrypted backup; payload decrypts to an ExportData JSON.
+// Self-contained: fresh salt per export, passphrase asked at export time.
+export interface EncryptedExportFile {
+  version: 1;
+  encrypted: true;
+  exportedAt: string;
+  salt: string;
+  payload: string;
+}
 
+export function isEncryptedExportFile(
+  data: ExportData | EncryptedExportFile,
+): data is EncryptedExportFile {
+  return (data as EncryptedExportFile).encrypted === true;
+}
+
+async function collectExportData(
+  includeChatData: boolean,
+  configs: ConfigsSnapshot,
+): Promise<ExportData> {
   const result: ExportData = {
     version: 1,
     exportedAt: new Date().toISOString(),
-    configs,
+    configs: {
+      profiles: configs.profiles.map((p) => ({ ...p })),
+      activeProfileId: configs.activeProfileId,
+    },
   };
 
   if (includeChatData) {
@@ -41,7 +67,43 @@ export async function exportData(
   return result;
 }
 
-export function downloadJson(data: ExportData, includeChatData: boolean): void {
+// Plain export for sharing: API keys are stripped entirely.
+export async function exportPlainWithoutKeys(
+  includeChatData: boolean,
+  configs: ConfigsSnapshot,
+): Promise<ExportData> {
+  const data = await collectExportData(includeChatData, configs);
+  for (const profile of data.configs.profiles) {
+    for (const field of KEY_FIELDS) {
+      profile[field] = "";
+    }
+  }
+  return data;
+}
+
+// Encrypted backup: full data (keys included) encrypted as a whole file.
+// Requires plaintext keys in the snapshot — callers must ensure the keys
+// are unlocked when at-rest encryption is enabled.
+export async function exportEncrypted(
+  includeChatData: boolean,
+  configs: ConfigsSnapshot,
+  passphrase: string,
+): Promise<EncryptedExportFile> {
+  const data = await collectExportData(includeChatData, configs);
+  const { salt, payload } = await encryptJson(passphrase, data);
+  return {
+    version: 1,
+    encrypted: true,
+    exportedAt: data.exportedAt,
+    salt,
+    payload,
+  };
+}
+
+export function downloadJson(
+  data: ExportData | EncryptedExportFile,
+  includeChatData: boolean,
+): void {
   const date = new Date().toISOString().slice(0, 10);
   const filename = includeChatData
     ? `chat-backup-${date}.json`
@@ -58,22 +120,47 @@ export function downloadJson(data: ExportData, includeChatData: boolean): void {
   URL.revokeObjectURL(url);
 }
 
-export async function readImportFile(file: File): Promise<ExportData> {
-  const text = await file.text();
-  const data = JSON.parse(text) as ExportData;
-
+function validateExportData(data: ExportData): ExportData {
   if (data.version !== 1) {
     throw new Error(`Unsupported export version: ${data.version}`);
   }
   if (!data.configs?.profiles || !Array.isArray(data.configs.profiles)) {
     throw new Error("Invalid export file: missing profiles");
   }
-
   return data;
+}
+
+// Returns the parsed file; encrypted files still need decryptExportFile.
+export async function readImportFile(
+  file: File,
+): Promise<ExportData | EncryptedExportFile> {
+  const text = await file.text();
+  const data = JSON.parse(text) as ExportData | EncryptedExportFile;
+
+  if (isEncryptedExportFile(data)) {
+    if (typeof data.salt !== "string" || typeof data.payload !== "string") {
+      throw new Error("Invalid encrypted export file");
+    }
+    return data;
+  }
+
+  return validateExportData(data);
+}
+
+export async function decryptExportFile(
+  file: EncryptedExportFile,
+  passphrase: string,
+): Promise<ExportData> {
+  const data = await decryptJson<ExportData>(passphrase, file.salt, file.payload);
+  return validateExportData(data);
 }
 
 export async function applyImport(
   data: ExportData,
+  // Encrypts a key field the way the active settings would store it
+  // (identity when at-rest encryption is off). applyImport writes
+  // localStorage directly, bypassing SettingsProvider.persist.
+  encryptKeyField: (value: string) => Promise<string>,
 ): Promise<{ profileCount: number; threadCount: number }> {
   // Merge profiles
   const raw = localStorage.getItem(CONFIGS_STORAGE_KEY);
@@ -86,7 +173,14 @@ export async function applyImport(
 
   for (const profile of data.configs.profiles) {
     if (!existingIds.has(profile.id as string)) {
-      existing.profiles.push(profile);
+      const stored = { ...profile };
+      for (const field of KEY_FIELDS) {
+        const value = stored[field];
+        if (typeof value === "string" && value) {
+          stored[field] = await encryptKeyField(value);
+        }
+      }
+      existing.profiles.push(stored);
       addedProfiles++;
     }
   }

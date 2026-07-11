@@ -55,7 +55,19 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { hasSearchApiKey } from "@/lib/tools/net-search";
 import type { ToolContext } from "@/lib/tools/registry";
 import { toast } from "sonner";
-import { exportData, downloadJson, readImportFile, applyImport, resetAllData } from "@/lib/config-io";
+import {
+  exportPlainWithoutKeys,
+  exportEncrypted,
+  downloadJson,
+  readImportFile,
+  decryptExportFile,
+  isEncryptedExportFile,
+  applyImport,
+  resetAllData,
+  type ExportData,
+  type EncryptedExportFile,
+} from "@/lib/config-io";
+import { PassphraseDialog } from "@/components/settings/passphrase-dialog";
 
 function ScrollToBottom({ onClick }: { onClick: () => void }) {
   return (
@@ -94,7 +106,7 @@ export function Thread() {
     forkThreadFromMessage,
   } = useChat();
   const { currentThreadId, createNewThread, refreshThreads } = useThreads();
-  const { settings, isConfigured, keysLocked, updateSettings, profiles, activeProfileId, switchProfile, reloadConfigs } = useSettings();
+  const { settings, isConfigured, keysLocked, encryptForStorage, updateSettings, profiles, activeProfileId, switchProfile, reloadConfigs } = useSettings();
   const { resolvedTheme, toggleTheme } = useTheme();
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
@@ -104,6 +116,10 @@ export function Thread() {
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [exportIncludeChat, setExportIncludeChat] = useState(false);
+  const [exportMode, setExportMode] = useState<"encrypted" | "plain">("encrypted");
+  const [exportPassOpen, setExportPassOpen] = useState(false);
+  const [importPassOpen, setImportPassOpen] = useState(false);
+  const [pendingImport, setPendingImport] = useState<EncryptedExportFile | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -183,32 +199,66 @@ export function Thread() {
   }, [isStreaming, regenerate]);
 
   const handleExport = useCallback(async () => {
-    try {
-      const data = await exportData(exportIncludeChat);
+    if (exportMode === "plain") {
+      try {
+        const data = await exportPlainWithoutKeys(exportIncludeChat, { profiles, activeProfileId });
+        downloadJson(data, exportIncludeChat);
+        setShowExportPanel(false);
+        toast.success("Exported successfully");
+      } catch {
+        toast.error("Export failed");
+      }
+      return;
+    }
+    // Encrypted backup embeds plaintext keys — unlock first when locked
+    if (keysLocked) {
+      setUnlockOpen(true);
+      return;
+    }
+    setExportPassOpen(true);
+  }, [exportMode, exportIncludeChat, profiles, activeProfileId, keysLocked]);
+
+  const handleEncryptedExport = useCallback(
+    async (passphrase: string) => {
+      const data = await exportEncrypted(exportIncludeChat, { profiles, activeProfileId }, passphrase);
       downloadJson(data, exportIncludeChat);
       setShowExportPanel(false);
       toast.success("Exported successfully");
-    } catch {
-      toast.error("Export failed");
-    }
-  }, [exportIncludeChat]);
+    },
+    [exportIncludeChat, profiles, activeProfileId],
+  );
+
+  const confirmAndApplyImport = useCallback(async (data: ExportData) => {
+    const profileCount = data.configs.profiles.length;
+    const hasChat = !!data.chatData;
+    const summary = `Import ${profileCount} profile(s)${hasChat ? " with chat history" : ""}?`;
+    if (!window.confirm(summary)) return;
+
+    const result = await applyImport(data, encryptForStorage);
+    reloadConfigs();
+    await refreshThreads();
+    toast.success(`Imported ${result.profileCount} new profile(s)${result.threadCount > 0 ? `, ${result.threadCount} thread(s)` : ""}`);
+  }, [encryptForStorage, reloadConfigs, refreshThreads]);
 
   const handleImportFile = useCallback(async (file: File) => {
     try {
+      // Imported keys must be encrypted before hitting localStorage
+      if (keysLocked) {
+        toast.error("Unlock API keys before importing");
+        setUnlockOpen(true);
+        return;
+      }
       const data = await readImportFile(file);
-      const profileCount = data.configs.profiles.length;
-      const hasChat = !!data.chatData;
-      const summary = `Import ${profileCount} profile(s)${hasChat ? " with chat history" : ""}?`;
-      if (!window.confirm(summary)) return;
-
-      const result = await applyImport(data);
-      reloadConfigs();
-      await refreshThreads();
-      toast.success(`Imported ${result.profileCount} new profile(s)${result.threadCount > 0 ? `, ${result.threadCount} thread(s)` : ""}`);
+      if (isEncryptedExportFile(data)) {
+        setPendingImport(data);
+        setImportPassOpen(true);
+        return;
+      }
+      await confirmAndApplyImport(data);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Import failed");
     }
-  }, [reloadConfigs, refreshThreads]);
+  }, [keysLocked, confirmAndApplyImport]);
 
   const handleReset = useCallback(async () => {
     if (!window.confirm("Are you sure you want to reset ALL data? This will delete all profiles, settings, and chat history.")) return;
@@ -337,9 +387,14 @@ export function Thread() {
                 Include chat history
               </Label>
             </div>
-            <span className="text-xs text-amber-600">
-              Export file contains API keys
-            </span>
+            <select
+              className="border-input bg-background text-xs rounded-md border px-2 py-1"
+              value={exportMode}
+              onChange={(e) => setExportMode(e.target.value as "encrypted" | "plain")}
+            >
+              <option value="encrypted">Encrypted backup (with API keys)</option>
+              <option value="plain">Plain JSON (without API keys)</option>
+            </select>
             <div className="flex items-center gap-2 ml-auto">
               <Button size="sm" variant="ghost" onClick={() => setShowExportPanel(false)}>
                 Cancel
@@ -581,6 +636,30 @@ export function Thread() {
 
       <SettingsPanel open={settingsOpen} onOpenChange={setSettingsOpen} />
       <UnlockDialog open={unlockOpen} onOpenChange={setUnlockOpen} />
+      <PassphraseDialog
+        open={exportPassOpen}
+        onOpenChange={setExportPassOpen}
+        title="Encrypt backup"
+        description="Set a passphrase for this backup file. It is required to import the file later and cannot be recovered."
+        confirmEntry
+        submitLabel="Export"
+        onSubmit={handleEncryptedExport}
+      />
+      <PassphraseDialog
+        open={importPassOpen}
+        onOpenChange={(o) => {
+          setImportPassOpen(o);
+          if (!o) setPendingImport(null);
+        }}
+        title="Encrypted backup"
+        description="This file is encrypted. Enter its passphrase to import."
+        submitLabel="Import"
+        onSubmit={async (pass) => {
+          if (!pendingImport) return;
+          const data = await decryptExportFile(pendingImport, pass);
+          await confirmAndApplyImport(data);
+        }}
+      />
     </div>
   );
 }
