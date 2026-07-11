@@ -195,6 +195,16 @@ async function streamAnthropicFromResponse(
               name: event.content_block.name || "",
               args: "",
             });
+            // Early indication: name/id are complete at block start; args
+            // stream in later. Empty args keep the UI rendering safe, and the
+            // final onToolCall/onDone below still carries the parsed args.
+            callbacks.onToolCall(
+              Array.from(toolCallsMap.values()).map((tc) => ({
+                id: tc.id,
+                name: tc.name,
+                args: {},
+              })),
+            );
           }
           break;
         }
@@ -279,9 +289,13 @@ export async function streamAnthropic(
   const body: Record<string, unknown> = {
     model: config.model,
     messages: toAnthropicMessages(messages),
-    max_tokens: 8192,
+    max_tokens: config.maxTokens ?? 8192,
     stream: true,
   };
+
+  if (config.temperature !== undefined) {
+    body.temperature = config.temperature;
+  }
 
   if (systemPrompt) {
     body.system = systemPrompt;

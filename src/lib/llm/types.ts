@@ -38,6 +38,9 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   requestMode?: RequestMode;
+  // Optional sampling params; undefined = not sent (provider default).
+  temperature?: number;
+  maxTokens?: number;
 }
 
 /** JSON schema of a single callable tool exposed to the LLM. */

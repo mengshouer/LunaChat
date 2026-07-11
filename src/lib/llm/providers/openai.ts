@@ -6,6 +6,7 @@ import type {
   StreamCallbacks,
 } from "../types";
 import { parseSSEStream } from "../stream-parser";
+import { createThinkTagParser, type ThinkSegment } from "../think-tag-parser";
 import { fetchWithMode } from "../http";
 import { resolveLLMEndpoint } from "../endpoints";
 import { createLLMHeaders } from "../headers";
@@ -99,13 +100,25 @@ async function streamOpenAIFromResponse(
   const reader = response.body!.getReader();
   let fullContent = "";
   let reasoningContent = "";
-  let insideThink = false;
-  // Buffer for detecting partial <think> or </think> tags at chunk boundaries
-  let tagBuffer = "";
+  const thinkParser = createThinkTagParser();
+  const emitSegments = (segments: ThinkSegment[]) => {
+    for (const seg of segments) {
+      if (seg.type === "thinking") {
+        reasoningContent += seg.value;
+        callbacks.onThinkingToken(seg.value);
+      } else {
+        fullContent += seg.value;
+        callbacks.onToken(seg.value);
+      }
+    }
+  };
   const toolCallsMap = new Map<
     number,
     { id: string; name: string; args: string }
   >();
+  // Debounce early tool-call indication: re-announce only when the set of
+  // (index, name) changes, not on every args delta.
+  let announcedSignature = "";
 
   for await (const data of parseSSEStream(reader)) {
     try {
@@ -122,81 +135,8 @@ async function streamOpenAIFromResponse(
       }
 
       if (delta.content) {
-        // Parse <think> tags in streaming content
-        let chunk = tagBuffer + delta.content;
-        tagBuffer = "";
-
-        while (chunk.length > 0) {
-          if (insideThink) {
-            const closeIdx = chunk.indexOf("</think>");
-            if (closeIdx !== -1) {
-              const thinkPart = chunk.slice(0, closeIdx);
-              reasoningContent += thinkPart;
-              callbacks.onThinkingToken(thinkPart);
-              insideThink = false;
-              chunk = chunk.slice(closeIdx + "</think>".length);
-            } else {
-              // Check for partial </think> at end
-              if (chunk.length < "</think>".length && "</think>".startsWith(chunk)) {
-                tagBuffer = chunk;
-                chunk = "";
-              } else {
-                // Check if ends with partial tag
-                let partialMatch = "";
-                for (let i = 1; i < "</think>".length; i++) {
-                  const tail = chunk.slice(-i);
-                  if ("</think>".startsWith(tail)) {
-                    partialMatch = tail;
-                    break;
-                  }
-                }
-                if (partialMatch) {
-                  const safePart = chunk.slice(0, -partialMatch.length);
-                  reasoningContent += safePart;
-                  callbacks.onThinkingToken(safePart);
-                  tagBuffer = partialMatch;
-                } else {
-                  reasoningContent += chunk;
-                  callbacks.onThinkingToken(chunk);
-                }
-                chunk = "";
-              }
-            }
-          } else {
-            const openIdx = chunk.indexOf("<think>");
-            if (openIdx !== -1) {
-              const before = chunk.slice(0, openIdx);
-              if (before) {
-                fullContent += before;
-                callbacks.onToken(before);
-              }
-              insideThink = true;
-              chunk = chunk.slice(openIdx + "<think>".length);
-            } else {
-              // Check for partial <think> at end
-              let partialMatch = "";
-              for (let i = 1; i < "<think>".length; i++) {
-                const tail = chunk.slice(-i);
-                if ("<think>".startsWith(tail)) {
-                  partialMatch = tail;
-                  break;
-                }
-              }
-              if (partialMatch) {
-                const safePart = chunk.slice(0, -partialMatch.length);
-                if (safePart) {
-                  fullContent += safePart;
-                  callbacks.onToken(safePart);
-                }
-                tagBuffer = partialMatch;
-              } else {
-                fullContent += chunk;
-                callbacks.onToken(chunk);
-              }
-              chunk = "";
-            }
-          }
-        }
+        // Parse inline <think> tags in streaming content
+        emitSegments(thinkParser.push(delta.content));
       }
 
       if (delta.tool_calls) {
@@ -214,22 +154,29 @@ async function streamOpenAIFromResponse(
           if (tc.function?.name) existing.name = tc.function.name;
           if (tc.function?.arguments) existing.args += tc.function.arguments;
         }
+        // Early indication with empty args; the final onToolCall/onDone below
+        // still delivers the fully parsed args.
+        const signature = Array.from(toolCallsMap.entries())
+          .map(([idx, tc]) => `${idx}:${tc.name}`)
+          .join("|");
+        if (signature !== announcedSignature) {
+          announcedSignature = signature;
+          callbacks.onToolCall(
+            Array.from(toolCallsMap.values()).map((tc) => ({
+              id: tc.id,
+              name: tc.name,
+              args: {},
+            })),
+          );
+        }
       }
     } catch {
       // skip malformed JSON lines
     }
   }
 
-  // Flush any remaining tagBuffer
-  if (tagBuffer) {
-    if (insideThink) {
-      reasoningContent += tagBuffer;
-      callbacks.onThinkingToken(tagBuffer);
-    } else {
-      fullContent += tagBuffer;
-      callbacks.onToken(tagBuffer);
-    }
-  }
+  // Flush any remaining partial-tag buffer
+  emitSegments(thinkParser.flush());
 
   const toolCalls: ToolCall[] = Array.from(toolCallsMap.values()).map((tc) => {
     let args: Record<string, unknown> = {};
@@ -263,6 +210,9 @@ export async function streamOpenAI(
     messages: toOpenAIMessages(messages, systemPrompt),
     stream: true,
   };
+
+  if (config.temperature !== undefined) body.temperature = config.temperature;
+  if (config.maxTokens !== undefined) body.max_tokens = config.maxTokens;
 
   if (tools.length > 0) {
     body.tools = tools;
