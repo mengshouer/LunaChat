@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useThreads } from "@/providers/ThreadProvider";
 import type { Thread } from "@/lib/db";
 import {
@@ -13,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   PanelRightOpen,
   PanelRightClose,
+  Pencil,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -24,39 +27,85 @@ function ThreadList({
   currentThreadId,
   onThreadClick,
   onDeleteThread,
+  onRenameThread,
 }: {
   threads: Thread[];
   currentThreadId: string | null;
   onThreadClick: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
+  onRenameThread: (threadId: string, title: string) => void;
 }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const startEditing = (t: Thread) => {
+    setEditingId(t.id);
+    setDraft(t.title);
+  };
+
+  const commitEditing = () => {
+    if (editingId) {
+      const trimmed = draft.trim();
+      if (trimmed) onRenameThread(editingId, trimmed);
+    }
+    setEditingId(null);
+  };
+
   return (
     <div className="h-full flex flex-col w-full gap-1 items-start justify-start overflow-y-scroll [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
       {threads.map((t) => (
         <div key={t.id} className="w-full px-1 group flex items-center">
-          <Button
-            variant="ghost"
-            className={cn(
-              "text-left items-start justify-start font-normal flex-1 min-w-0",
-              currentThreadId === t.id && "bg-accent",
-            )}
-            onClick={() => onThreadClick(t.id)}
-          >
-            <div className="flex flex-col min-w-0">
-              <p className="truncate text-ellipsis">{t.title}</p>
-            </div>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDeleteThread(t.id);
-            }}
-          >
-            <Trash2 className="size-3" />
-          </Button>
+          {editingId === t.id ? (
+            <Input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitEditing}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitEditing();
+                else if (e.key === "Escape") setEditingId(null);
+              }}
+              className="h-8 flex-1 min-w-0 mx-1"
+            />
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                className={cn(
+                  "text-left items-start justify-start font-normal flex-1 min-w-0",
+                  currentThreadId === t.id && "bg-accent",
+                )}
+                onClick={() => onThreadClick(t.id)}
+                onDoubleClick={() => startEditing(t)}
+              >
+                <div className="flex flex-col min-w-0">
+                  <p className="truncate text-ellipsis">{t.title}</p>
+                </div>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startEditing(t);
+                }}
+              >
+                <Pencil className="size-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteThread(t.id);
+                }}
+              >
+                <Trash2 className="size-3" />
+              </Button>
+            </>
+          )}
         </div>
       ))}
     </div>
@@ -88,6 +137,7 @@ export default function ThreadHistory({
     switchThread,
     createNewThread,
     removeThread,
+    updateThreadTitle,
   } = useThreads();
 
   const handleThreadClick = (id: string) => {
@@ -125,6 +175,7 @@ export default function ThreadHistory({
               currentThreadId={currentThreadId}
               onThreadClick={handleThreadClick}
               onDeleteThread={removeThread}
+              onRenameThread={updateThreadTitle}
             />
           )}
         </div>
@@ -154,6 +205,7 @@ export default function ThreadHistory({
               currentThreadId={currentThreadId}
               onThreadClick={handleThreadClick}
               onDeleteThread={removeThread}
+              onRenameThread={updateThreadTitle}
             />
           </SheetContent>
         </Sheet>
