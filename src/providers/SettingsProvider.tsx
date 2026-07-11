@@ -29,6 +29,9 @@ export interface Settings {
   systemPrompt: string;
   requestMode: RequestMode;
   searchEnabled: boolean;
+  // Optional sampling params; absent = not sent (provider default).
+  temperature?: number;
+  maxTokens?: number;
 }
 
 export interface ConfigProfile extends Settings {

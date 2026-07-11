@@ -261,6 +261,54 @@ export function ProviderForm() {
         </p>
       </div>
 
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="temperature">Temperature</Label>
+          <Input
+            id="temperature"
+            type="number"
+            min="0"
+            max="2"
+            step="0.1"
+            placeholder="Default"
+            value={settings.temperature ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "") {
+                updateSettings({ temperature: undefined });
+                return;
+              }
+              const n = Number(v);
+              if (!Number.isNaN(n)) updateSettings({ temperature: n });
+            }}
+          />
+          <p className="text-xs text-muted-foreground">Empty = provider default</p>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="maxTokens">Max Tokens</Label>
+          <Input
+            id="maxTokens"
+            type="number"
+            min="1"
+            step="1"
+            placeholder="Default"
+            value={settings.maxTokens ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "") {
+                updateSettings({ maxTokens: undefined });
+                return;
+              }
+              const n = parseInt(v, 10);
+              if (!Number.isNaN(n) && n > 0) updateSettings({ maxTokens: n });
+            }}
+          />
+          <p className="text-xs text-muted-foreground">
+            Empty = provider default (Anthropic falls back to 8192)
+          </p>
+        </div>
+      </div>
+
       <div className="space-y-2">
         <Label htmlFor="systemPrompt">System Prompt</Label>
         <Textarea
