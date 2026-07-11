@@ -108,6 +108,15 @@ export async function updateThread(
   await db.threads.update(id, { ...updates, updatedAt: Date.now() });
 }
 
+// Move the active branch pointer without bumping updatedAt, so switching
+// branches does not reorder the (updatedAt-sorted) thread list.
+export async function setActiveLeaf(
+  threadId: string,
+  leafId: string,
+): Promise<void> {
+  await db.threads.update(threadId, { activeLeafId: leafId });
+}
+
 export async function deleteThread(id: string): Promise<void> {
   await db.transaction("rw", [db.threads, db.messages], async () => {
     await db.messages.where("threadId").equals(id).delete();
