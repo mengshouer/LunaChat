@@ -86,20 +86,25 @@ export function AssistantMessage({
           />
         )}
 
-        <div
-          className={cn(
-            "flex gap-2 items-center mr-auto transition-opacity",
-            "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
-          )}
-        >
-          <CommandBar
-            content={message.content}
-            isLoading={isLoading}
-            isAiMessage={true}
-            handleRegenerate={isLastMessage ? handleRegenerate : undefined}
-            handleFork={handleFork}
-          />
-        </div>
+        {/* A message carrying toolCalls is an intermediate ReAct step — the
+            reply continues in a later assistant message, so offering
+            copy/fork/regenerate here would act on an unfinished reply. */}
+        {!hasToolCalls && (
+          <div
+            className={cn(
+              "flex gap-2 items-center mr-auto transition-opacity",
+              "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
+            )}
+          >
+            <CommandBar
+              content={message.content}
+              isLoading={isLoading}
+              isAiMessage={true}
+              handleRegenerate={isLastMessage ? handleRegenerate : undefined}
+              handleFork={handleFork}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
