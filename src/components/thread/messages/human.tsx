@@ -222,7 +222,7 @@ export function HumanMessage({
 
   return (
     <div className="flex flex-col items-end ml-auto max-w-full">
-      <div className="flex items-center gap-2 group">
+      <div className="flex items-center gap-2 group min-w-0 max-w-full">
         {onEditSubmit && (
           <TooltipIconButton
             tooltip="Edit message"
@@ -234,7 +234,7 @@ export function HumanMessage({
             <Pencil className="size-3.5" />
           </TooltipIconButton>
         )}
-        <div className="flex flex-col gap-2 items-end">
+        <div className="flex flex-col gap-2 items-end min-w-0 max-w-full">
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 justify-end">
               {attachments.map((a) =>

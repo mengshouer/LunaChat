@@ -1,3 +1,9 @@
+/* Break long unbroken strings (e.g. "1,2,3,...,3000" with no spaces) so they
+   wrap inside the bubble instead of overflowing on a single line. */
+.markdown-content {
+  overflow-wrap: anywhere;
+}
+
 .markdown-content code:not(pre code) {
   background-color: var(--muted);
   padding: 0.2em 0.4em;

@@ -52,8 +52,8 @@ export function AssistantMessage({
   }
 
   return (
-    <div className="flex items-start mr-auto gap-2 group">
-      <div className="flex flex-col gap-2 max-w-full break-words">
+    <div className="flex items-start mr-auto gap-2 group min-w-0 max-w-full">
+      <div className="flex flex-col gap-2 min-w-0 max-w-full break-words">
         {message.reasoningContent && (
           <ThinkingBlock
             content={message.reasoningContent}
