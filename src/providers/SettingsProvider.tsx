@@ -310,7 +310,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         for (const field of API_KEY_FIELDS) delete updates[field];
       }
       setProfiles((prev) => {
-        const currentActive = resolveActiveProfile(prev, activeProfileId);
+        // Write path must target the resolved active profile only. If
+        // activeProfileId no longer resolves (e.g. cross-tab edit), no-op
+        // rather than silently writing into profiles[0].
+        const currentActive = activeProfileId
+          ? prev.find((p) => p.id === activeProfileId)
+          : undefined;
+        if (!currentActive) return prev;
         const next = prev.map((p) => {
           if (p.id !== currentActive.id) return p;
           const updated = { ...p, ...updates };
