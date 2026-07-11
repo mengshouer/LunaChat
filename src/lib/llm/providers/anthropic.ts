@@ -172,6 +172,64 @@ async function streamAnthropicFromResponse(
   // Track block types: "thinking" | "text" | "tool_use"
   const blockTypes = new Map<number, string>();
 
+  const processLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return;
+
+    const data = trimmed.slice(6);
+    if (data === "[DONE]") return;
+
+    try {
+      const event = JSON.parse(data);
+
+      switch (event.type) {
+        case "content_block_start": {
+          currentBlockIndex = event.index;
+          const blockType = event.content_block?.type;
+          if (blockType) {
+            blockTypes.set(currentBlockIndex, blockType);
+          }
+          if (blockType === "tool_use") {
+            toolCallsMap.set(currentBlockIndex, {
+              id: event.content_block.id || "",
+              name: event.content_block.name || "",
+              args: "",
+            });
+          }
+          break;
+        }
+
+        case "content_block_delta": {
+          const delta = event.delta;
+          if (delta?.type === "thinking_delta" && delta.thinking) {
+            reasoningContent += delta.thinking;
+            callbacks.onThinkingToken(delta.thinking);
+          } else if (delta?.type === "text_delta" && delta.text) {
+            fullContent += delta.text;
+            callbacks.onToken(delta.text);
+          } else if (delta?.type === "input_json_delta" && delta.partial_json) {
+            const existing = toolCallsMap.get(currentBlockIndex);
+            if (existing) {
+              existing.args += delta.partial_json;
+            }
+          }
+          break;
+        }
+
+        case "message_delta": {
+          // Message complete
+          break;
+        }
+
+        case "message_stop": {
+          break;
+        }
+      }
+    } catch {
+      // skip malformed JSON
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -181,62 +239,14 @@ async function streamAnthropicFromResponse(
     buffer = lines.pop() || "";
 
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-
-      const data = trimmed.slice(6);
-      if (data === "[DONE]") continue;
-
-      try {
-        const event = JSON.parse(data);
-
-        switch (event.type) {
-          case "content_block_start": {
-            currentBlockIndex = event.index;
-            const blockType = event.content_block?.type;
-            if (blockType) {
-              blockTypes.set(currentBlockIndex, blockType);
-            }
-            if (blockType === "tool_use") {
-              toolCallsMap.set(currentBlockIndex, {
-                id: event.content_block.id || "",
-                name: event.content_block.name || "",
-                args: "",
-              });
-            }
-            break;
-          }
-
-          case "content_block_delta": {
-            const delta = event.delta;
-            if (delta?.type === "thinking_delta" && delta.thinking) {
-              reasoningContent += delta.thinking;
-              callbacks.onThinkingToken(delta.thinking);
-            } else if (delta?.type === "text_delta" && delta.text) {
-              fullContent += delta.text;
-              callbacks.onToken(delta.text);
-            } else if (delta?.type === "input_json_delta" && delta.partial_json) {
-              const existing = toolCallsMap.get(currentBlockIndex);
-              if (existing) {
-                existing.args += delta.partial_json;
-              }
-            }
-            break;
-          }
-
-          case "message_delta": {
-            // Message complete
-            break;
-          }
-
-          case "message_stop": {
-            break;
-          }
-        }
-      } catch {
-        // skip malformed JSON
-      }
+      processLine(line);
     }
+  }
+
+  // Flush a trailing data line left in the buffer when the stream ends
+  // without a final newline.
+  if (buffer.trim()) {
+    processLine(buffer);
   }
 
   const toolCalls: ToolCall[] = Array.from(toolCallsMap.values()).map((tc) => {

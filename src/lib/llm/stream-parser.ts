@@ -22,8 +22,11 @@ export async function* parseSSEStream(
     }
   }
 
-  if (buffer.trim().startsWith(" ")) {
-    const data = buffer.trim().slice(6);
+  // Flush a trailing data line left in the buffer when the stream ends
+  // without a final newline (e.g. no [DONE] sentinel).
+  const trailing = buffer.trim();
+  if (trailing.startsWith("data: ")) {
+    const data = trailing.slice(6);
     if (data !== "[DONE]") {
       yield data;
     }
