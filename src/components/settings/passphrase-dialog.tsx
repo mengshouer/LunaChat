@@ -69,7 +69,7 @@ export function PassphraseDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 px-4 pb-4">
           <PasswordInput
             placeholder="Passphrase"
             value={pass}
