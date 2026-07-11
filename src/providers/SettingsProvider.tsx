@@ -235,6 +235,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   // current encryption state without threading it through every caller.
   const encryptionRef = useRef<EncryptionMeta | null>(null);
   const cryptoKeyRef = useRef<CryptoKey | null>(null);
+  // Serializes localStorage writes so an async encrypted write can't be
+  // overtaken by a later (possibly synchronous) write and clobbered.
+  const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
   encryptionRef.current = encryption;
   cryptoKeyRef.current = cryptoKey;
 
@@ -301,16 +304,21 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         activeProfileId: nextActiveId,
         ...(meta ? { encryption: meta } : {}),
       });
-    if (meta && key) {
-      // In-memory profiles are plaintext while unlocked; encrypt key fields
-      // on the way to localStorage. Locked profiles already hold ciphertext
-      // (key-field updates are ignored while locked), passing through as-is.
-      Promise.all(nextProfiles.map((p) => encryptProfileKeys(p, key)))
-        .then(write)
-        .catch(console.error);
-    } else {
-      write(nextProfiles);
-    }
+    // Both the encrypted (async) and plaintext paths go through one queue so
+    // writes land in call order regardless of per-write async duration.
+    persistQueueRef.current = persistQueueRef.current
+      .then(async () => {
+        if (meta && key) {
+          // In-memory profiles are plaintext while unlocked; encrypt key
+          // fields on the way to localStorage. Locked profiles already hold
+          // ciphertext (key-field updates are ignored while locked), passing
+          // through as-is.
+          write(await Promise.all(nextProfiles.map((p) => encryptProfileKeys(p, key))));
+        } else {
+          write(nextProfiles);
+        }
+      })
+      .catch(console.error);
   }, []);
 
   const updateSettings = useCallback(
