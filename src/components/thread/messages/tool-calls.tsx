@@ -143,7 +143,7 @@ export function ToolCalls({
     <div className="space-y-4 w-full max-w-4xl">
       {toolCalls.map((tc, idx) => (
         <ToolCallWithResultCard
-          key={tc.id ?? idx}
+          key={tc.id || idx}
           call={tc}
           result={resultsById && tc.id ? resultsById[tc.id] : undefined}
         />
