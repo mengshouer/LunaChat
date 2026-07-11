@@ -18,6 +18,7 @@ import {
   Upload,
   RotateCcw,
   MoreHorizontal,
+  Wrench,
   Sun,
   Moon,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
@@ -105,7 +107,7 @@ export function Thread() {
     branchInfo,
     forkThreadFromMessage,
   } = useChat();
-  const { currentThreadId, createNewThread, refreshThreads } = useThreads();
+  const { currentThreadId, createNewThread, refreshThreads, threads } = useThreads();
   const { settings, isConfigured, keysLocked, encryptForStorage, updateSettings, profiles, activeProfileId, switchProfile, reloadConfigs } = useSettings();
   const { resolvedTheme, toggleTheme } = useTheme();
   const [input, setInput] = useState("");
@@ -135,6 +137,11 @@ export function Thread() {
       return acc;
     }, {});
   }, [messages]);
+
+  const currentThreadTitle = useMemo(
+    () => threads.find((t) => t.id === currentThreadId)?.title ?? "",
+    [threads, currentThreadId],
+  );
 
   const addFiles = useCallback((files: FileList | File[]) => {
     setPendingAttachments((prev) => [...prev, ...toPendingAttachments(files)]);
@@ -294,76 +301,99 @@ export function Thread() {
             </Button>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <Switch
-                id="hide-tools"
-                checked={hideToolCalls}
-                onCheckedChange={setHideToolCalls}
-              />
-              <Label htmlFor="hide-tools" className="text-xs">
-                Hide tools
-              </Label>
-            </div>
+          {currentThreadTitle && (
+            <h2 className="hidden lg:block flex-1 min-w-0 truncate text-sm font-medium text-muted-foreground px-2">
+              {currentThreadTitle}
+            </h2>
+          )}
+
+          <div className="flex items-center gap-1">
             {/* Profile switcher */}
-            <div className="flex items-center gap-1">
-              <select
-                className="border-input bg-background text-xs rounded-md border px-2 py-1 max-w-[140px] truncate"
-                value={activeProfileId ?? ""}
-                onChange={(e) => switchProfile(e.target.value)}
-              >
-                {profiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="size-7" title="More actions">
-                    <MoreHorizontal className="size-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setShowExportPanel((v) => !v)}>
-                    <Download className="size-3.5 mr-2" />
-                    Export
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => importInputRef.current?.click()}>
-                    <Upload className="size-3.5 mr-2" />
-                    Import
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem className="text-destructive" onClick={handleReset}>
-                    <RotateCcw className="size-3.5 mr-2" />
-                    Reset All Data
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <input
-                ref={importInputRef}
-                type="file"
-                accept=".json"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleImportFile(file);
-                  e.target.value = "";
-                }}
-              />
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggleTheme}
-              title={resolvedTheme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            <select
+              className="border-input bg-background text-xs rounded-md border px-2 py-1 max-w-[140px] truncate mr-1"
+              value={activeProfileId ?? ""}
+              onChange={(e) => switchProfile(e.target.value)}
             >
-              {resolvedTheme === "dark" ? (
-                <Sun className="size-5" />
-              ) : (
-                <Moon className="size-5" />
-              )}
-            </Button>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" title="More actions">
+                  <MoreHorizontal className="size-5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel className="text-xs text-muted-foreground">
+                  View
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onSelect={(e) => e.preventDefault()}
+                  onClick={toggleTheme}
+                  className="justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    {resolvedTheme === "dark" ? (
+                      <Moon className="size-3.5" />
+                    ) : (
+                      <Sun className="size-3.5" />
+                    )}
+                    Dark mode
+                  </span>
+                  <Switch
+                    checked={resolvedTheme === "dark"}
+                    onCheckedChange={toggleTheme}
+                    className="pointer-events-none"
+                  />
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={(e) => e.preventDefault()}
+                  onClick={() => setHideToolCalls((v) => !v)}
+                  className="justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    <Wrench className="size-3.5" />
+                    Hide tools
+                  </span>
+                  <Switch
+                    checked={hideToolCalls}
+                    onCheckedChange={setHideToolCalls}
+                    className="pointer-events-none"
+                  />
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-xs text-muted-foreground">
+                  Data
+                </DropdownMenuLabel>
+                <DropdownMenuItem onClick={() => setShowExportPanel((v) => !v)}>
+                  <Download className="size-3.5 mr-2" />
+                  Export
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => importInputRef.current?.click()}>
+                  <Upload className="size-3.5 mr-2" />
+                  Import
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="text-destructive" onClick={handleReset}>
+                  <RotateCcw className="size-3.5 mr-2" />
+                  Reset All Data
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleImportFile(file);
+                e.target.value = "";
+              }}
+            />
             <Button
               variant="ghost"
               size="icon"
