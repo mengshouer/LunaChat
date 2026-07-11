@@ -14,6 +14,7 @@ import type { SearchProviderId } from "@/lib/tools/net-search/types";
 import { resolveLLMEndpoint } from "@/lib/llm/endpoints";
 import { createLLMHeaders } from "@/lib/llm/headers";
 import { normalizeModels, type ModelListItem } from "@/lib/llm/models";
+import { accessTokenHeader } from "@/lib/access-token";
 
 const SEARCH_PROVIDER_CONFIGS: Record<
   string,
@@ -90,7 +91,7 @@ export function ProviderForm() {
   async function fetchModelsFromServer(): Promise<Response> {
     return fetch("/api/models", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...accessTokenHeader() },
       body: JSON.stringify({
         provider: settings.provider,
         baseUrl: settings.baseUrl,

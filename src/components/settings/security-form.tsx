@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { UnlockDialog } from "./unlock-dialog";
+import { getAccessToken, setAccessToken } from "@/lib/access-token";
 
 // Passphrase form shared by "enable encryption" and "change passphrase":
 // two matching inputs, submit enabled only when they match.
@@ -60,6 +61,53 @@ function PassphraseForm({
 }
 
 export function SecurityForm() {
+  return (
+    <div className="flex flex-col gap-6">
+      <EncryptionSection />
+      <div className="border-t" />
+      <AccessTokenSection />
+    </div>
+  );
+}
+
+function AccessTokenSection() {
+  const [token, setToken] = useState(() => getAccessToken());
+  const [busy, setBusy] = useState(false);
+
+  const handleSave = () => {
+    setBusy(true);
+    try {
+      setAccessToken(token.trim());
+      toast.success("Access token saved");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="accessToken">API access token</Label>
+      <p className="text-xs text-muted-foreground">
+        Sent as the <code>x-access-token</code> header to this app&apos;s /api
+        routes. Only required when the server sets an <code>API_ACCESS_TOKEN</code>.
+        Stored in this browser only (not per profile, not encrypted).
+      </p>
+      <div className="flex gap-2">
+        <PasswordInput
+          id="accessToken"
+          placeholder="Access token"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+        />
+        <Button type="button" variant="outline" onClick={handleSave} disabled={busy}>
+          Save
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function EncryptionSection() {
   const {
     encryptionEnabled,
     keysLocked,

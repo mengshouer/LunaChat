@@ -1,4 +1,5 @@
 import type { RequestMode } from "./types";
+import { accessTokenHeader } from "../access-token";
 
 const failedClientOrigins = new Set<string>();
 
@@ -29,6 +30,10 @@ export async function fetchWithMode(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        // A relative url targets this app's own /api routes (net_search hits
+        // /api/exa, /api/tavily via callHttpTool requestMode:"client"); attach
+        // the access token there. External absolute LLM urls never get it.
+        ...(url.startsWith("/") ? accessTokenHeader() : {}),
         ...headers,
       },
       body: JSON.stringify(body),
@@ -38,7 +43,7 @@ export async function fetchWithMode(
   const server = () =>
     fetch("/api/llm", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...accessTokenHeader() },
       body: JSON.stringify({ url, headers, body }),
       signal,
     });
@@ -50,7 +55,16 @@ export async function fetchWithMode(
 
   try {
     return await client();
-  } catch {
+  } catch (err) {
+    // A user-initiated Stop rejects the fetch with an AbortError. That is not
+    // an origin failure: don't remember it and don't fall back to the proxy,
+    // just rethrow so the caller sees the abort.
+    if (
+      (err instanceof DOMException && err.name === "AbortError") ||
+      signal?.aborted
+    ) {
+      throw err;
+    }
     failedClientOrigins.add(origin);
     return server();
   }
