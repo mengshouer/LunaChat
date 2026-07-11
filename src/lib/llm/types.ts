@@ -59,7 +59,6 @@ export interface StreamCallbacks {
   onThinkingToken: (token: string) => void;
   onToolCall: (toolCalls: ToolCall[]) => void;
   onDone: (fullContent: string, toolCalls: ToolCall[], reasoningContent?: string) => void;
-  onError: (error: Error) => void;
 }
 
 /**

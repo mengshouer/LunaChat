@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolCall } from "../llm/types";
 import type { SearchProviderId } from "./net-search/types";
+import type { Settings } from "@/providers/SettingsProvider";
 import { createNetSearchSpec, hasSearchApiKey } from "./net-search";
 
 /**
@@ -23,6 +24,19 @@ export interface ToolContext {
   exaBaseUrl: string;
   tavilyApiKey: string;
   tavilyBaseUrl: string;
+}
+
+// Projects the search-related fields of Settings into a ToolContext. Single
+// source of the mapping used by the chat loop and the search-toggle UI.
+export function settingsToToolContext(settings: Settings): ToolContext {
+  return {
+    searchEnabled: settings.searchEnabled,
+    searchProvider: settings.searchProvider,
+    exaApiKey: settings.exaApiKey,
+    exaBaseUrl: settings.exaBaseUrl,
+    tavilyApiKey: settings.tavilyApiKey,
+    tavilyBaseUrl: settings.tavilyBaseUrl,
+  };
 }
 
 export function createToolRegistry(context: ToolContext): ToolRegistry {

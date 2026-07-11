@@ -8,9 +8,12 @@ export interface ReactLoopCallbacks {
   onToken: (token: string) => void;
   onThinkingToken: (token: string) => void;
   onToolCallStart: (toolCalls: ToolCall[]) => void;
-  onToolResult: (toolCallId: string, name: string, result: string) => void;
+  // Called after each iteration's stream ends, BEFORE its tools run. The
+  // caller awaits it to persist the assistant message first, so the DB
+  // parentId chain stays ordered assistant → tool → next assistant.
+  onAssistantMessage: (msg: ChatMessage) => Promise<void>;
+  onToolResult: (toolCallId: string, name: string, result: string) => Promise<void>;
   onDone: (finalContent: string, reasoningContent?: string) => void;
-  onError: (error: Error) => void;
 }
 
 export async function runReactLoop(
@@ -75,7 +78,6 @@ export async function runReactLoop(
           iterToolCalls = toolCalls;
           iterReasoningContent = reasoningContent;
         },
-        onError: callbacks.onError,
       } satisfies StreamCallbacks,
       systemPrompt,
       signal,
@@ -93,6 +95,9 @@ export async function runReactLoop(
     };
     assistantMessages.push(assistantMsg);
     conversationMessages.push(assistantMsg);
+    // Persist this iteration's assistant message before running its tools, so
+    // the assistant carrier is stored ahead of its tool results.
+    await callbacks.onAssistantMessage(assistantMsg);
 
     if (iterToolCalls.length === 0) {
       callbacks.onDone(iterContent, iterReasoningContent);
@@ -120,7 +125,8 @@ export async function runReactLoop(
       };
       toolMessages.push(toolMsg);
       conversationMessages.push(toolMsg);
-      callbacks.onToolResult(tc.id, tc.name, result);
+      // Await so the parentId chain in the caller is strictly ordered.
+      await callbacks.onToolResult(tc.id, tc.name, result);
     }
   }
 

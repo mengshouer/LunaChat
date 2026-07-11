@@ -18,11 +18,12 @@ import {
   addMessage,
   getMessages,
   getThread,
-  updateThread,
   deleteLastAssistantMessages,
   forkThread,
+  setActiveLeaf,
 } from "@/lib/db";
 import { getActivePath, getSiblings, findLatestLeaf } from "@/lib/message-tree";
+import { buildHistory } from "@/lib/chat-history";
 import { uploadAttachments } from "@/lib/attachment-storage";
 import type {
   Attachment,
@@ -30,7 +31,7 @@ import type {
   PendingAttachment,
 } from "@/lib/attachments";
 import { runReactLoop } from "@/lib/react-loop";
-import { createToolRegistry } from "@/lib/tools/registry";
+import { createToolRegistry, settingsToToolContext } from "@/lib/tools/registry";
 import { buildSystemPrompt, DEFAULT_SYSTEM_PROMPT } from "@/lib/prompts";
 
 export type SendMessageInput =
@@ -67,56 +68,6 @@ interface ChatContextValue {
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
-
-// Inlines extracted text from non-image attachments into the message content.
-// Images are handled as multimodal blocks in the provider layer.
-function buildLLMContent(
-  content: string,
-  nonImageAttachments?: Attachment[],
-): string {
-  if (!nonImageAttachments || nonImageAttachments.length === 0) return content;
-  const sections = nonImageAttachments.map((a) => {
-    if (a.extractedText) {
-      return `<file name="${a.name}" type="${a.mimeType}">\n${a.extractedText}\n</file>`;
-    }
-    return `<file name="${a.name}" type="${a.mimeType}">[binary file — content not available]</file>`;
-  });
-  const block = sections.join("\n\n");
-  return content ? `${content}\n\n${block}` : block;
-}
-
-// Builds LLM conversation history from the active branch path.
-// - Images and PDFs go into ChatMessage.attachments for multimodal provider blocks.
-// - Text/other files are inlined into content via buildLLMContent.
-function buildHistory(path: DBMessage[]): ChatMessage[] {
-  return path.map((m) => {
-    const multimodalAttachments = (m.attachments ?? []).filter(
-      (a) =>
-        a.mimeType.startsWith("image/") || a.mimeType === "application/pdf",
-    );
-    // All non-image attachments get their extractedText inlined into content.
-    // This covers PDFs (for OpenAI) and text files.
-    const textAttachments = (m.attachments ?? []).filter(
-      (a) => !a.mimeType.startsWith("image/"),
-    );
-    return {
-      role: m.role,
-      content: buildLLMContent(m.content, textAttachments),
-      toolCalls: m.toolCalls as ToolCall[] | undefined,
-      toolCallId: m.toolCallId,
-      name: m.name,
-      ...(multimodalAttachments.length > 0
-        ? {
-            attachments: multimodalAttachments.map((a) => ({
-              url: a.url,
-              mimeType: a.mimeType,
-              name: a.name,
-            })),
-          }
-        : {}),
-    };
-  });
-}
 
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const {
@@ -165,6 +116,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         toolCalls: ToolCall[];
         thinking: string;
         thinkingStartTime: number | null;
+        thinkingEndTime: number | null;
       }
     >
   >(new Map());
@@ -306,36 +258,81 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
       };
 
-      const defaultState = () => ({
+      // One state object for the whole turn. The map only holds a reference
+      // for cross-thread restore; stopStreaming may delete the map entry, but
+      // this closure keeps the object alive (the abort partial-persist reads
+      // it). Updaters mutate turnState and never re-set the map — otherwise a
+      // late token after stopStreaming would resurrect a deleted entry and
+      // make isThreadStreaming wrongly report the thread as busy.
+      const turnState = {
         content: "",
         toolCalls: [] as ToolCall[],
         thinking: "",
         thinkingStartTime: null as number | null,
-      });
+        thinkingEndTime: null as number | null,
+      };
+      const isTurnLive = () =>
+        streamingStateMap.current.get(threadId) === turnState;
+
+      // rAF batching: stream callbacks mutate turnState synchronously and
+      // request at most one React state flush per frame. rafId is a turn-local
+      // closure var (not a shared ref) so concurrent background turns never
+      // cancel each other's flushes.
+      let rafId: number | null = null;
+      const flushStreamingUI = () => {
+        rafId = null;
+        if (!isCurrentThread() || !isTurnLive()) return;
+        setStreamingContent(turnState.content);
+        setStreamingThinking(turnState.thinking);
+        setThinkingStartTime(turnState.thinkingStartTime);
+        setStreamingToolCalls(turnState.toolCalls);
+      };
+      const scheduleFlush = () => {
+        if (!isCurrentThread() || !isTurnLive() || rafId !== null) return;
+        rafId = requestAnimationFrame(flushStreamingUI);
+      };
+      const forceFlush = () => {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        flushStreamingUI();
+      };
 
       const updateStreamingContent = (updater: (prev: string) => string) => {
-        const state = streamingStateMap.current.get(threadId) ?? defaultState();
-        state.content = updater(state.content);
-        streamingStateMap.current.set(threadId, state);
-        if (isCurrentThread()) setStreamingContent(state.content);
+        // The first content token closes the thinking window.
+        if (turnState.thinkingStartTime && !turnState.thinkingEndTime) {
+          turnState.thinkingEndTime = Date.now();
+        }
+        turnState.content = updater(turnState.content);
+        scheduleFlush();
       };
 
       const updateStreamingThinking = (token: string) => {
-        const state = streamingStateMap.current.get(threadId) ?? defaultState();
-        if (!state.thinkingStartTime) {
-          state.thinkingStartTime = Date.now();
-          if (isCurrentThread()) setThinkingStartTime(state.thinkingStartTime);
+        if (!turnState.thinkingStartTime) {
+          turnState.thinkingStartTime = Date.now();
         }
-        state.thinking += token;
-        streamingStateMap.current.set(threadId, state);
-        if (isCurrentThread()) setStreamingThinking(state.thinking);
+        turnState.thinking += token;
+        scheduleFlush();
       };
 
       const updateStreamingToolCalls = (toolCalls: ToolCall[]) => {
-        const state = streamingStateMap.current.get(threadId) ?? defaultState();
-        state.toolCalls = toolCalls;
-        streamingStateMap.current.set(threadId, state);
-        if (isCurrentThread()) setStreamingToolCalls(toolCalls);
+        turnState.toolCalls = toolCalls;
+        scheduleFlush();
+      };
+
+      // Reset at each iteration boundary: an abort then only captures the
+      // current iteration's partial, and the just-persisted assistant message
+      // isn't double-shown by a stale streaming snapshot. forceFlush is
+      // synchronous so the cleared state paints in the same tick as the
+      // persisted message append.
+      const resetTurnState = () => {
+        turnState.content = "";
+        turnState.thinking = "";
+        turnState.thinkingStartTime = null;
+        turnState.thinkingEndTime = null;
+        turnState.toolCalls = [];
+        forceFlush();
       };
 
       const appendErrorMessage = async (message: string) => {
@@ -355,7 +352,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       };
 
       // Start streaming
-      streamingStateMap.current.set(threadId, defaultState());
+      streamingStateMap.current.set(threadId, turnState);
       if (isCurrentThread()) {
         setIsStreaming(true);
         setStreamingContent("");
@@ -368,14 +365,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const abortController = new AbortController();
       abortMap.current.set(threadId, abortController);
 
-      const toolContext = {
-        searchEnabled: settings.searchEnabled,
-        searchProvider: settings.searchProvider,
-        exaApiKey: settings.exaApiKey,
-        exaBaseUrl: settings.exaBaseUrl,
-        tavilyApiKey: settings.tavilyApiKey,
-        tavilyBaseUrl: settings.tavilyBaseUrl,
-      };
+      const toolContext = settingsToToolContext(settings);
       const toolRegistry = createToolRegistry(toolContext);
 
       const systemPrompt = buildSystemPrompt(
@@ -383,17 +373,16 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         settings.searchEnabled,
       );
 
-      let loopError: Error | null = null;
-      let errorAppended = false;
-
       try {
-        const { assistantMessages } = await runReactLoop(
+        await runReactLoop(
           {
             provider: settings.provider,
             baseUrl: settings.baseUrl,
             apiKey: settings.apiKey,
             model: settings.model,
             requestMode: settings.requestMode ?? "auto",
+            temperature: settings.temperature,
+            maxTokens: settings.maxTokens,
           },
           chatMessages,
           toolRegistry,
@@ -409,6 +398,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             onToolCallStart: (tcs) => {
               updateStreamingToolCalls(tcs);
             },
+            onAssistantMessage: async (aMsg) => {
+              const dbMsg: DBMessage = {
+                id: uuidv4(),
+                threadId,
+                role: "assistant",
+                content: aMsg.content,
+                toolCalls: aMsg.toolCalls,
+                createdAt: Date.now(),
+                parentId: lastMsgId,
+                ...(aMsg.reasoningContent
+                  ? {
+                      reasoningContent: aMsg.reasoningContent,
+                      thinkingDuration: aMsg.thinkingDuration,
+                    }
+                  : {}),
+              };
+              await persistMessage(dbMsg);
+              // Iteration boundary: clear partial so the next iteration (or an
+              // abort) starts clean and this persisted message isn't shadowed
+              // by a stale streaming snapshot.
+              resetTurnState();
+            },
             onToolResult: async (toolCallId, name, result) => {
               const toolResultMsg: DBMessage = {
                 id: uuidv4(),
@@ -421,58 +432,54 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
                 parentId: lastMsgId,
               };
               await persistMessage(toolResultMsg);
-              updateStreamingContent(() => "");
-              updateStreamingToolCalls([]);
             },
-            onDone: async () => {},
-            onError: (err) => {
-              if (!abortController.signal.aborted) {
-                loopError = err;
-                if (isCurrentThread()) {
-                  setError(err.message);
-                }
-                if (!errorAppended) {
-                  errorAppended = true;
-                  appendErrorMessage(err.message).catch(console.error);
-                }
-              }
-            },
+            onDone: () => {},
           },
           abortController.signal,
         );
-
-        // Save all assistant messages to DB (always); thinkingDuration is
-        // measured per iteration inside runReactLoop.
-        for (const aMsg of assistantMessages) {
-          const dbMsg: DBMessage = {
-            id: uuidv4(),
-            threadId,
-            role: "assistant",
-            content: aMsg.content,
-            toolCalls: aMsg.toolCalls,
-            createdAt: Date.now(),
-            parentId: lastMsgId,
-            ...(aMsg.reasoningContent
-              ? {
-                  reasoningContent: aMsg.reasoningContent,
-                  thinkingDuration: aMsg.thinkingDuration,
-                }
-              : {}),
-          };
-          await persistMessage(dbMsg);
-        }
       } catch (err) {
         // A user-initiated abort can surface as Error("Aborted"), a fetch
         // DOMException, or a reader error — signal.aborted is the one
         // authoritative check.
-        const e = err instanceof Error ? err : loopError;
-        if (e && !abortController.signal.aborted && !errorAppended) {
+        if (abortController.signal.aborted) {
+          // Stop: keep the current iteration's streamed partial as a normal
+          // assistant message. Never persist turnState.toolCalls — with early
+          // tool-call indication those may be half-built (args:{}) and would
+          // have no matching tool result, making replay invalid.
+          if (turnState.content || turnState.thinking) {
+            const partialMsg: DBMessage = {
+              id: uuidv4(),
+              threadId,
+              role: "assistant",
+              content: turnState.content,
+              createdAt: Date.now(),
+              parentId: lastMsgId,
+              ...(turnState.thinking
+                ? {
+                    reasoningContent: turnState.thinking,
+                    thinkingDuration: turnState.thinkingStartTime
+                      ? (turnState.thinkingEndTime ?? Date.now()) -
+                        turnState.thinkingStartTime
+                      : undefined,
+                  }
+                : {}),
+            };
+            await persistMessage(partialMsg).catch(console.error);
+          }
+        } else {
+          // Single error path: the providers throw, so any non-abort error
+          // arrives here.
+          const e = err instanceof Error ? err : new Error(String(err));
           await appendErrorMessage(e.message);
           if (isCurrentThread()) {
             setError(e.message);
           }
         }
       } finally {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
         streamingStateMap.current.delete(threadId);
         if (abortMap.current.get(threadId) === abortController) {
           abortMap.current.delete(threadId);
@@ -515,10 +522,6 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
       // Upload attachments (base64 data URLs for now)
       let attachments: Attachment[] = [];
-      if (pendingAttachments.length > 0) {
-        attachments = await uploadAttachments(pendingAttachments);
-      }
-
       // Save user message at the end of the active branch
       const userMsg: DBMessage = {
         id: uuidv4(),
@@ -528,11 +531,19 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         createdAt: Date.now(),
         parentId:
           priorPath.length > 0 ? priorPath[priorPath.length - 1].id : null,
-        ...(attachments.length > 0 ? { attachments } : {}),
       };
-      await addMessage(userMsg);
-      appendMessageLocal(userMsg);
-      creatingThreadRef.current = null;
+      try {
+        if (pendingAttachments.length > 0) {
+          attachments = await uploadAttachments(pendingAttachments);
+          if (attachments.length > 0) userMsg.attachments = attachments;
+        }
+        await addMessage(userMsg);
+        appendMessageLocal(userMsg);
+      } finally {
+        // Always release the guard, even if upload/persist throws, so the
+        // thread-change effect isn't permanently blocked from reloading it.
+        creatingThreadRef.current = null;
+      }
 
       // Auto-generate title from first message
       if (priorPath.length === 0) {
@@ -611,7 +622,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const targetIdx = direction === "prev" ? idx - 1 : idx + 1;
       if (idx === -1 || targetIdx < 0 || targetIdx >= siblings.length) return;
       const newLeafId = findLatestLeaf(allMessages, siblings[targetIdx].id);
-      await updateThread(currentThreadId, { activeLeafId: newLeafId });
+      // setActiveLeaf keeps updatedAt untouched so the thread list order
+      // doesn't jump when merely viewing another branch.
+      await setActiveLeaf(currentThreadId, newLeafId);
       setActiveLeafId(newLeafId);
     },
     [isThreadStreaming, currentThreadId, allMessages],
