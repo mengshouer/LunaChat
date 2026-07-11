@@ -165,6 +165,14 @@ function loadConfigs(): ConfigsData {
           ...DEFAULT_SETTINGS,
           ...p,
         }));
+        // Normalize a null/dangling activeProfileId so the steady state is
+        // always resolvable (updateSettings refuses to write otherwise).
+        if (
+          !parsed.activeProfileId ||
+          !parsed.profiles.some((p) => p.id === parsed.activeProfileId)
+        ) {
+          parsed.activeProfileId = parsed.profiles[0].id;
+        }
         return parsed;
       }
     }
