@@ -76,6 +76,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     updateThreadTitle,
     switchThread,
     refreshThreads,
+    removeThread,
     threads,
     isLoading: threadsLoading,
   } = useThreads();
@@ -518,9 +519,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         typeof input === "string" ? [] : (input.attachments ?? []);
 
       let threadId = currentThreadId;
+      let createdThreadId: string | null = null;
       let priorPath: DBMessage[] = [];
       if (!threadId) {
         threadId = await createNewThread(activeProfileId ?? undefined);
+        createdThreadId = threadId;
         creatingThreadRef.current = threadId;
       } else {
         const [existing, thread] = await Promise.all([
@@ -549,6 +552,15 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
         await addMessage(userMsg);
         appendMessageLocal(userMsg);
+      } catch (err) {
+        // Never leave a freshly-created thread empty in the list/DB when its
+        // first message failed to persist. removeThread also clears the URL
+        // threadId (via ThreadProvider), whose thread-change effect resets the
+        // local message state. Rethrow so the composer restores the input.
+        if (createdThreadId) {
+          await removeThread(createdThreadId).catch(console.error);
+        }
+        throw err;
       } finally {
         // Always release the guard, even if upload/persist throws, so the
         // thread-change effect isn't permanently blocked from reloading it.
@@ -571,6 +583,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       isThreadStreaming,
       currentThreadId,
       createNewThread,
+      removeThread,
       updateThreadTitle,
       activeProfileId,
       runAssistantTurn,

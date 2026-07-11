@@ -111,7 +111,18 @@ export function Composer({
       const attachmentsToSend = pendingAttachments;
       setInput("");
       setPendingAttachments([]);
-      await sendMessage({ content: trimmed, attachments: attachmentsToSend });
+      try {
+        await sendMessage({ content: trimmed, attachments: attachmentsToSend });
+      } catch (err) {
+        // Send failed after we cleared the composer. Restore what the user had
+        // typed unless they've already started a new message, and surface the
+        // error instead of dropping it as an unhandled rejection.
+        setInput((cur) => (cur ? cur : input));
+        setPendingAttachments((cur) => (cur.length ? cur : attachmentsToSend));
+        toast.error(
+          err instanceof Error ? err.message : "Failed to send message",
+        );
+      }
     },
     [
       input,
