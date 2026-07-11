@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Textarea } from "@/components/ui/textarea";
+import { UnlockDialog } from "./unlock-dialog";
 import type { SearchProviderId } from "@/lib/tools/net-search/types";
 import { resolveLLMEndpoint } from "@/lib/llm/endpoints";
 import { createLLMHeaders } from "@/lib/llm/headers";
@@ -32,8 +33,22 @@ function getOrigin(url: string): string {
   }
 }
 
+// Shown in place of a key input while API keys are passphrase-locked.
+function LockedKeyInput({ id }: { id: string }) {
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  return (
+    <div className="flex gap-2">
+      <Input id={id} disabled value="Encrypted — unlock to view" />
+      <Button type="button" variant="outline" onClick={() => setUnlockOpen(true)}>
+        Unlock
+      </Button>
+      <UnlockDialog open={unlockOpen} onOpenChange={setUnlockOpen} />
+    </div>
+  );
+}
+
 export function ProviderForm() {
-  const { settings, updateSettings } = useSettings();
+  const { settings, updateSettings, keysLocked } = useSettings();
   const [models, setModels] = useState<ModelListItem[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
@@ -97,6 +112,10 @@ export function ProviderForm() {
   async function fetchModels() {
     if (!settings.baseUrl.trim()) {
       toast.error("Please set Base URL first");
+      return;
+    }
+    if (keysLocked) {
+      toast.error("API keys are locked — unlock them in the Security tab first");
       return;
     }
 
@@ -212,12 +231,16 @@ export function ProviderForm() {
 
       <div className="space-y-2">
         <Label htmlFor="apiKey">API Key</Label>
-        <PasswordInput
-          id="apiKey"
-          placeholder="sk-..."
-          value={settings.apiKey}
-          onChange={(e) => updateSettings({ apiKey: e.target.value })}
-        />
+        {keysLocked ? (
+          <LockedKeyInput id="apiKey" />
+        ) : (
+          <PasswordInput
+            id="apiKey"
+            placeholder="sk-..."
+            value={settings.apiKey}
+            onChange={(e) => updateSettings({ apiKey: e.target.value })}
+          />
+        )}
       </div>
 
       <div className="space-y-2">
@@ -253,7 +276,7 @@ export function ProviderForm() {
 }
 
 export function ToolsForm() {
-  const { settings, updateSettings } = useSettings();
+  const { settings, updateSettings, keysLocked } = useSettings();
   const searchProviderConfig = SEARCH_PROVIDER_CONFIGS[settings.searchProvider] ?? null;
 
   return (
@@ -287,14 +310,18 @@ export function ToolsForm() {
             <Label htmlFor={searchProviderConfig.apiKeyField}>
               {searchProviderConfig.label} API Key
             </Label>
-            <PasswordInput
-              id={searchProviderConfig.apiKeyField}
-              placeholder={searchProviderConfig.apiKeyPlaceholder}
-              value={(settings[searchProviderConfig.apiKeyField] as string) ?? ""}
-              onChange={(e) =>
-                updateSettings({ [searchProviderConfig.apiKeyField]: e.target.value } as Partial<Settings>)
-              }
-            />
+            {keysLocked ? (
+              <LockedKeyInput id={searchProviderConfig.apiKeyField} />
+            ) : (
+              <PasswordInput
+                id={searchProviderConfig.apiKeyField}
+                placeholder={searchProviderConfig.apiKeyPlaceholder}
+                value={(settings[searchProviderConfig.apiKeyField] as string) ?? ""}
+                onChange={(e) =>
+                  updateSettings({ [searchProviderConfig.apiKeyField]: e.target.value } as Partial<Settings>)
+                }
+              />
+            )}
             <p className="text-xs text-muted-foreground">
               Enables web search tool for the AI assistant
             </p>

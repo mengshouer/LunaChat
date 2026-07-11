@@ -50,6 +50,7 @@ import {
 } from "./messages/ai";
 import ThreadHistory from "./history";
 import { SettingsPanel } from "@/components/settings";
+import { UnlockDialog } from "@/components/settings/unlock-dialog";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { hasSearchApiKey } from "@/lib/tools/net-search";
 import type { ToolContext } from "@/lib/tools/registry";
@@ -93,13 +94,14 @@ export function Thread() {
     forkThreadFromMessage,
   } = useChat();
   const { currentThreadId, createNewThread, refreshThreads } = useThreads();
-  const { settings, isConfigured, updateSettings, profiles, activeProfileId, switchProfile, reloadConfigs } = useSettings();
+  const { settings, isConfigured, keysLocked, updateSettings, profiles, activeProfileId, switchProfile, reloadConfigs } = useSettings();
   const { resolvedTheme, toggleTheme } = useTheme();
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [hideToolCalls, setHideToolCalls] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [unlockOpen, setUnlockOpen] = useState(false);
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [exportIncludeChat, setExportIncludeChat] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -152,12 +154,17 @@ export function Thread() {
         return;
       }
 
+      if (keysLocked) {
+        setUnlockOpen(true);
+        return;
+      }
+
       const attachmentsToSend = pendingAttachments;
       setInput("");
       setPendingAttachments([]);
       await sendMessage({ content: trimmed, attachments: attachmentsToSend });
     },
-    [input, pendingAttachments, isStreaming, isConfigured, sendMessage],
+    [input, pendingAttachments, isStreaming, isConfigured, keysLocked, sendMessage],
   );
 
   const handleKeyDown = useCallback(
@@ -536,9 +543,11 @@ export function Thread() {
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 placeholder={
-                  isConfigured
-                    ? "Send a message... (Shift+Enter for newline)"
-                    : "Set Base URL and Model first..."
+                  !isConfigured
+                    ? "Set Base URL and Model first..."
+                    : keysLocked
+                      ? "API keys locked — press send to unlock..."
+                      : "Send a message... (Shift+Enter for newline)"
                 }
                 disabled={!isConfigured}
                 rows={1}
@@ -571,6 +580,7 @@ export function Thread() {
       </div>
 
       <SettingsPanel open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <UnlockDialog open={unlockOpen} onOpenChange={setUnlockOpen} />
     </div>
   );
 }

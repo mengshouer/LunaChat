@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ProviderForm, ToolsForm } from "./provider-form";
+import { SecurityForm } from "./security-form";
 import { ProfileManager } from "./profile-manager";
 
 export function SettingsPanel({
@@ -33,12 +34,16 @@ export function SettingsPanel({
             <TabsList className="w-full">
               <TabsTrigger value="provider" className="flex-1">Provider</TabsTrigger>
               <TabsTrigger value="tools" className="flex-1">Tools</TabsTrigger>
+              <TabsTrigger value="security" className="flex-1">Security</TabsTrigger>
             </TabsList>
             <TabsContent value="provider">
               <ProviderForm />
             </TabsContent>
             <TabsContent value="tools">
               <ToolsForm />
+            </TabsContent>
+            <TabsContent value="security">
+              <SecurityForm />
             </TabsContent>
           </Tabs>
         </div>
