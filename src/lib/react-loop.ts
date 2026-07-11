@@ -40,6 +40,10 @@ export async function runReactLoop(
     let iterContent = "";
     let iterToolCalls: ToolCall[] = [];
     let iterReasoningContent: string | undefined;
+    // Per-iteration thinking window: first thinking token → first content
+    // token (or stream end), so tool execution time is never included.
+    let thinkingStart: number | null = null;
+    let thinkingEnd: number | null = null;
 
     await streamFn(
       config,
@@ -47,10 +51,16 @@ export async function runReactLoop(
       toolRegistry.definitions,
       {
         onToken: (token) => {
+          if (thinkingStart !== null && thinkingEnd === null) {
+            thinkingEnd = Date.now();
+          }
           iterContent += token;
           callbacks.onToken(token);
         },
         onThinkingToken: (token) => {
+          if (thinkingStart === null) {
+            thinkingStart = Date.now();
+          }
           callbacks.onThinkingToken(token);
         },
         onToolCall: (tcs) => {
@@ -58,6 +68,9 @@ export async function runReactLoop(
           callbacks.onToolCallStart(tcs);
         },
         onDone: (content, toolCalls, reasoningContent) => {
+          if (thinkingStart !== null && thinkingEnd === null) {
+            thinkingEnd = Date.now();
+          }
           iterContent = content;
           iterToolCalls = toolCalls;
           iterReasoningContent = reasoningContent;
@@ -72,9 +85,12 @@ export async function runReactLoop(
       role: "assistant",
       content: iterContent,
       toolCalls: iterToolCalls.length > 0 ? iterToolCalls : undefined,
+      reasoningContent: iterReasoningContent,
+      thinkingDuration:
+        thinkingStart !== null && thinkingEnd !== null
+          ? thinkingEnd - thinkingStart
+          : undefined,
     };
-    // Attach reasoningContent to the message for the caller to use
-    (assistantMsg as ChatMessage & { reasoningContent?: string }).reasoningContent = iterReasoningContent;
     assistantMessages.push(assistantMsg);
     conversationMessages.push(assistantMsg);
 
@@ -109,9 +125,6 @@ export async function runReactLoop(
   }
 
   const lastMsg = assistantMessages[assistantMessages.length - 1];
-  callbacks.onDone(
-    lastMsg?.content || "",
-    (lastMsg as ChatMessage & { reasoningContent?: string })?.reasoningContent,
-  );
+  callbacks.onDone(lastMsg?.content || "", lastMsg?.reasoningContent);
   return { assistantMessages, toolMessages };
 }

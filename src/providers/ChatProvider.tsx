@@ -139,7 +139,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
   );
   const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCall[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  // One AbortController per streaming thread so background turns on other
+  // threads can be aborted independently (never clobbered by a newer turn).
+  const abortMap = useRef<Map<string, AbortController>>(new Map());
 
   // Thread being created by an in-flight sendMessage. The thread-change
   // effect must not reload it concurrently: that read can land between
@@ -241,15 +243,28 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const clearError = useCallback(() => setError(null), []);
 
+  // Authoritative per-thread streaming check (the isStreaming state only
+  // mirrors the currently visible thread).
+  const isThreadStreaming = useCallback(
+    (threadId: string | null | undefined) =>
+      !!threadId && streamingStateMap.current.has(threadId),
+    [],
+  );
+
+  // Stop only the currently visible thread's stream; background streams on
+  // other threads keep running and stay stoppable when switched back to.
   const stopStreaming = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
+    const threadId = currentThreadIdRef.current;
+    if (threadId) {
+      abortMap.current.get(threadId)?.abort();
+      abortMap.current.delete(threadId);
+      streamingStateMap.current.delete(threadId);
+    }
     setIsStreaming(false);
     setStreamingContent("");
     setStreamingThinking("");
     setThinkingStartTime(null);
     setStreamingToolCalls([]);
-    streamingStateMap.current.clear();
   }, []);
 
   // Runs one ReAct turn: streams the LLM response, executes tools, persists
@@ -336,7 +351,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       setError(null);
 
       const abortController = new AbortController();
-      abortRef.current = abortController;
+      abortMap.current.set(threadId, abortController);
 
       const toolContext = {
         searchEnabled: settings.searchEnabled,
@@ -396,7 +411,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             },
             onDone: async () => {},
             onError: (err) => {
-              if (err.message !== "Aborted") {
+              if (!abortController.signal.aborted) {
                 loopError = err;
                 if (isCurrentThread()) {
                   setError(err.message);
@@ -411,16 +426,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           abortController.signal,
         );
 
-        // Save all assistant messages to DB (always)
-        const thinkingDuration = streamingStateMap.current.get(threadId)
-          ?.thinkingStartTime
-          ? Date.now() -
-            streamingStateMap.current.get(threadId)!.thinkingStartTime!
-          : undefined;
+        // Save all assistant messages to DB (always); thinkingDuration is
+        // measured per iteration inside runReactLoop.
         for (const aMsg of assistantMessages) {
-          const reasoning = (
-            aMsg as typeof aMsg & { reasoningContent?: string }
-          ).reasoningContent;
           const dbMsg: DBMessage = {
             id: uuidv4(),
             threadId,
@@ -429,15 +437,21 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
             toolCalls: aMsg.toolCalls,
             createdAt: Date.now(),
             parentId: lastMsgId,
-            ...(reasoning
-              ? { reasoningContent: reasoning, thinkingDuration }
+            ...(aMsg.reasoningContent
+              ? {
+                  reasoningContent: aMsg.reasoningContent,
+                  thinkingDuration: aMsg.thinkingDuration,
+                }
               : {}),
           };
           await persistMessage(dbMsg);
         }
       } catch (err) {
+        // A user-initiated abort can surface as Error("Aborted"), a fetch
+        // DOMException, or a reader error — signal.aborted is the one
+        // authoritative check.
         const e = err instanceof Error ? err : loopError;
-        if (e && e.message !== "Aborted" && !errorAppended) {
+        if (e && !abortController.signal.aborted && !errorAppended) {
           await appendErrorMessage(e.message);
           if (isCurrentThread()) {
             setError(e.message);
@@ -445,7 +459,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         }
       } finally {
         streamingStateMap.current.delete(threadId);
-        abortRef.current = null;
+        if (abortMap.current.get(threadId) === abortController) {
+          abortMap.current.delete(threadId);
+        }
 
         if (isCurrentThread()) {
           setIsStreaming(false);
@@ -463,7 +479,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 
   const sendMessage = useCallback(
     async (input: SendMessageInput) => {
-      if (isStreaming) return;
+      if (isThreadStreaming(currentThreadId)) return;
 
       const content = typeof input === "string" ? input : (input.content ?? "");
       const pendingAttachments =
@@ -516,7 +532,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       await runAssistantTurn(threadId, chatMessages, userMsg.id);
     },
     [
-      isStreaming,
+      isThreadStreaming,
       currentThreadId,
       createNewThread,
       updateThreadTitle,
@@ -535,7 +551,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       newContent: string,
       attachmentEdit?: AttachmentEdit,
     ) => {
-      if (isStreaming || !currentThreadId) return;
+      if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
       const threadId = currentThreadId;
       const original = allMessages.find((m) => m.id === messageId);
       if (!original || original.role !== "user") return;
@@ -565,14 +581,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       const path = getActivePath(fresh, newMsg.id);
       await runAssistantTurn(threadId, buildHistory(path), newMsg.id);
     },
-    [isStreaming, currentThreadId, allMessages, runAssistantTurn, appendMessageLocal],
+    [isThreadStreaming, currentThreadId, allMessages, runAssistantTurn, appendMessageLocal],
   );
 
   // Switch to the previous/next sibling branch at the given message,
   // landing on that branch's most recent leaf.
   const switchBranch = useCallback(
     async (messageId: string, direction: "prev" | "next") => {
-      if (isStreaming || !currentThreadId) return;
+      if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
       const msg = allMessages.find((m) => m.id === messageId);
       if (!msg) return;
       const siblings = getSiblings(allMessages, msg);
@@ -583,14 +599,14 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       await updateThread(currentThreadId, { activeLeafId: newLeafId });
       setActiveLeafId(newLeafId);
     },
-    [isStreaming, currentThreadId, allMessages],
+    [isThreadStreaming, currentThreadId, allMessages],
   );
 
   // Copy the active path up to and including the given assistant message
   // into a brand-new thread, then switch to it.
   const forkThreadFromMessage = useCallback(
     async (messageId: string) => {
-      if (isStreaming || !currentThreadId) return;
+      if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
       const idx = messages.findIndex((m) => m.id === messageId);
       if (idx === -1) return;
       const pathSlice = messages.slice(0, idx + 1);
@@ -623,11 +639,11 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       await refreshThreads();
       switchThread(newThreadId);
     },
-    [isStreaming, currentThreadId, messages, refreshThreads, switchThread],
+    [isThreadStreaming, currentThreadId, messages, refreshThreads, switchThread],
   );
 
   const regenerate = useCallback(async () => {
-    if (isStreaming || !currentThreadId) return;
+    if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
 
     const threadId = currentThreadId;
 
@@ -645,7 +661,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     if (!lastMsg || lastMsg.role !== "user") return;
 
     await runAssistantTurn(threadId, buildHistory(path), lastMsg.id);
-  }, [isStreaming, currentThreadId, runAssistantTurn]);
+  }, [isThreadStreaming, currentThreadId, runAssistantTurn]);
 
   return (
     <ChatContext.Provider

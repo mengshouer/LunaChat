@@ -14,6 +14,10 @@ export interface ChatMessage {
   name?: string;
   // image attachments forwarded as multimodal blocks; non-image files are summarised in content
   attachments?: { url: string; mimeType: string; name: string }[];
+  // Extended-thinking output of this assistant message and how long the
+  // thinking phase lasted (ms), measured per loop iteration.
+  reasoningContent?: string;
+  thinkingDuration?: number;
 }
 
 /** Logical provider identifier used for dispatching to concrete LLM clients. */
