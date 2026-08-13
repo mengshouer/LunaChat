@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Inter } from "next/font/google";
 import React from "react";
@@ -15,6 +15,12 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Chat",
   description: "Browser-native AI chat with ReAct loop",
+};
+
+export const viewport: Viewport = {
+  // Let the on-screen keyboard shrink the layout viewport (Android Chrome)
+  // instead of covering the composer.
+  interactiveWidget: "resizes-content",
 };
 
 // Runs synchronously before first paint to avoid a flash of the wrong theme.
@@ -40,3 +46,4 @@ export default function RootLayout({
     </html>
   );
 }
+

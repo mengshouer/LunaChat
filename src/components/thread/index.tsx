@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useStickToBottom } from "use-stick-to-bottom";
 import { AnimatePresence } from "framer-motion";
 import { Settings } from "lucide-react";
@@ -41,7 +41,16 @@ export function Thread() {
   const { currentThreadId, createNewThread, threads } = useThreads();
   const { isConfigured } = useSettings();
   const [hideToolCalls, setHideToolCalls] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(true);
+  // SSR and first client render both default to closed so the header toggle
+  // matches the server HTML (no hydration mismatch). The sidebar is then
+  // opened on desktop after mount; mobile stays closed so the history sheet
+  // doesn't cover the conversation on first load.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => {
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      setHistoryOpen(true);
+    }
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
 
@@ -72,7 +81,7 @@ export function Thread() {
   };
 
   return (
-    <div className="flex h-screen w-full overflow-hidden">
+    <div className="flex h-dvh w-full overflow-hidden">
       <AnimatePresence>
         <ThreadHistory
           isOpen={historyOpen}
@@ -213,3 +222,4 @@ export function Thread() {
     </div>
   );
 }
+
