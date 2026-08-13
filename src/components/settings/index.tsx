@@ -142,7 +142,7 @@ export function SettingsPanel({
             menu before editing a profile.
           </div>
         ) : (
-          <div className="px-4 overflow-y-auto flex-1">
+          <div className="px-4 pb-4 overflow-y-auto flex-1">
             <fieldset disabled={busy} className="contents">
               <ProfileManager
                 selectedProfileId={selectedProfileId}
