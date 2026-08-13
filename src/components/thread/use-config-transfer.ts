@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useThreads } from "@/providers/ThreadProvider";
 import { useSettings } from "@/providers/SettingsProvider";
+import { useChat } from "@/providers/ChatProvider";
 import {
   exportPlainWithoutKeys,
   exportEncrypted,
@@ -11,8 +12,6 @@ import {
   readImportFile,
   decryptExportFile,
   isEncryptedExportFile,
-  applyImport,
-  resetAllData,
   type ExportData,
   type EncryptedExportFile,
 } from "@/lib/config-io";
@@ -51,11 +50,12 @@ export function useConfigTransfer({
   const { refreshThreads } = useThreads();
   const {
     keysLocked,
-    encryptForStorage,
     profiles,
     activeProfileId,
-    reloadConfigs,
+    restoreImportedData,
+    resetApplicationData,
   } = useSettings();
+  const { activeTurnCount, abortAllTurns } = useChat();
 
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [exportIncludeChat, setExportIncludeChat] = useState(false);
@@ -115,27 +115,44 @@ export function useConfigTransfer({
     async (data: ExportData) => {
       const profileCount = data.configs.profiles.length;
       const hasChat = !!data.chatData;
-      const summary = `Import ${profileCount} profile(s)${
-        hasChat ? " with chat history" : ""
-      }?`;
+      const chatClause = hasChat ? " and merge chat history" : "";
+      // A backup restore replaces the local profile set, so it needs a sharper
+      // warning than a shared config, which can only ever add profiles.
+      const summary =
+        data.mode === "backup"
+          ? `Restore this backup? Your ${profiles.length} local profile(s) and their API keys will be REPLACED by ${profileCount} from the file${chatClause}. Threads bound to a replaced profile fall back to the active one. Unsaved profile edits will be discarded.`
+          : `Add ${profileCount} profile(s) from this config file${chatClause}? Your existing profiles and API keys are kept. Unsaved profile edits will be discarded.`;
       if (!window.confirm(summary)) return;
+      if (activeTurnCount > 0) {
+        toast.error("Stop all background responses before importing");
+        return;
+      }
 
-      const result = await applyImport(data, encryptForStorage);
-      reloadConfigs();
+      const result = await restoreImportedData(data);
       await refreshThreads();
-      toast.success(
-        `Imported ${result.profileCount} new profile(s)${
-          result.threadCount > 0 ? `, ${result.threadCount} thread(s)` : ""
-        }`,
-      );
+      const parts = [
+        result.mode === "backup"
+          ? `Restored ${result.profileCount} profile(s)`
+          : `Added ${result.addedProfileCount} of ${result.profileCount} profile(s)`,
+      ];
+      if (result.threadCount > 0) parts.push(`${result.threadCount} thread(s)`);
+      if (result.skippedThreadCount > 0) {
+        parts.push(`skipped ${result.skippedThreadCount} conflicting thread(s)`);
+      }
+      if (result.unboundThreadCount > 0) {
+        parts.push(
+          `${result.unboundThreadCount} thread(s) now use the active profile`,
+        );
+      }
+      toast.success(parts.join(", "));
     },
-    [encryptForStorage, reloadConfigs, refreshThreads],
+    [activeTurnCount, profiles.length, restoreImportedData, refreshThreads],
   );
 
   const handleImportFile = useCallback(
     async (file: File) => {
       try {
-        // Imported keys must be encrypted before hitting localStorage
+        // Imported plaintext keys must be encrypted before the Dexie commit.
         if (keysLocked) {
           toast.error("Unlock API keys before importing");
           onRequireUnlock();
@@ -173,12 +190,13 @@ export function useConfigTransfer({
       return;
     if (!window.confirm("This action CANNOT be undone. Continue?")) return;
     try {
-      await resetAllData();
+      await abortAllTurns();
+      await resetApplicationData();
       window.location.reload();
     } catch {
       toast.error("Reset failed");
     }
-  }, []);
+  }, [abortAllTurns, resetApplicationData]);
 
   return {
     showExportPanel,

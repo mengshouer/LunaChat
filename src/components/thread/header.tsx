@@ -3,6 +3,7 @@
 import {
   PanelRightOpen,
   Settings,
+  Shield,
   Plus,
   Download,
   Upload,
@@ -22,7 +23,6 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
-import { useSettings } from "@/providers/SettingsProvider";
 import { useTheme } from "@/providers/ThemeProvider";
 import type { ConfigTransfer } from "./use-config-transfer";
 
@@ -34,6 +34,10 @@ export function ThreadHeader({
   hideToolCalls,
   onToggleHideToolCalls,
   onOpenSettings,
+  onOpenSecurity,
+  profiles,
+  selectedProfileId,
+  onSelectProfile,
   transfer,
 }: {
   historyOpen: boolean;
@@ -43,9 +47,12 @@ export function ThreadHeader({
   hideToolCalls: boolean;
   onToggleHideToolCalls: () => void;
   onOpenSettings: () => void;
+  onOpenSecurity: () => void;
+  profiles: Array<{ id: string; name: string }>;
+  selectedProfileId: string | null;
+  onSelectProfile: (id: string) => void;
   transfer: ConfigTransfer;
 }) {
-  const { profiles, activeProfileId, switchProfile } = useSettings();
   const { resolvedTheme, toggleTheme } = useTheme();
 
   return (
@@ -71,9 +78,13 @@ export function ThreadHeader({
         {/* Profile switcher */}
         <select
           className="border-input bg-background text-xs rounded-md border px-2 py-1 max-w-[140px] truncate mr-1"
-          value={activeProfileId ?? ""}
-          onChange={(e) => switchProfile(e.target.value)}
+          value={selectedProfileId ?? ""}
+          onChange={(e) => onSelectProfile(e.target.value)}
         >
+          {selectedProfileId &&
+            !profiles.some((profile) => profile.id === selectedProfileId) && (
+              <option value={selectedProfileId}>Profile missing</option>
+            )}
           {profiles.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
@@ -123,6 +134,11 @@ export function ThreadHeader({
                 onCheckedChange={onToggleHideToolCalls}
                 className="pointer-events-none"
               />
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onOpenSecurity}>
+              <Shield className="size-3.5 mr-2" />
+              Security
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs text-muted-foreground">

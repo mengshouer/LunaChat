@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
         max_results: Math.min(maxResults, 10),
         include_answer: false,
       }),
+      signal: request.signal,
     });
 
     if (!response.ok) {

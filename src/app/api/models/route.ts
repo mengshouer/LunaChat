@@ -31,6 +31,7 @@ export async function POST(request: NextRequest) {
         Accept: "application/json",
         ...createLLMHeaders(provider, typeof apiKey === "string" ? apiKey : ""),
       },
+      signal: request.signal,
     });
 
     return new Response(response.body, {

@@ -2,12 +2,13 @@
 
 import React, {
   createContext,
-  useContext,
-  useState,
   useCallback,
-  useMemo,
-  useRef,
+  useContext,
   useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
 } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { useThreads } from "./ThreadProvider";
@@ -15,14 +16,19 @@ import { useSettings } from "./SettingsProvider";
 import type { ChatMessage, ToolCall } from "@/lib/llm/types";
 import {
   type Message as DBMessage,
+  type Thread,
   addMessage,
+  createThreadWithFirstMessage,
+  deleteLastAssistantMessages,
+  deleteThread as deleteThreadFromDb,
+  forkThread,
   getMessages,
   getThread,
-  deleteLastAssistantMessages,
-  forkThread,
   setActiveLeaf,
+  setThreadSearchEnabled,
+  updateThread,
 } from "@/lib/db";
-import { getActivePath, getSiblings, findLatestLeaf } from "@/lib/message-tree";
+import { findLatestLeaf, getActivePath, getSiblings } from "@/lib/message-tree";
 import { buildHistory } from "@/lib/chat-history";
 import { uploadAttachments } from "@/lib/attachment-storage";
 import type {
@@ -31,28 +37,71 @@ import type {
   PendingAttachment,
 } from "@/lib/attachments";
 import { runReactLoop } from "@/lib/react-loop";
-import { createToolRegistry, settingsToToolContext } from "@/lib/tools/registry";
+import {
+  createToolRegistry,
+  isSearchToolEnabled,
+  settingsToToolContext,
+} from "@/lib/tools/registry";
 import { buildSystemPrompt, DEFAULT_SYSTEM_PROMPT } from "@/lib/prompts";
+import { hasSearchApiKey } from "@/lib/tools/net-search";
+import { profileToSettings, type Settings } from "@/lib/settings-types";
+import {
+  checkTurnAdmission,
+  resolveSearchEnabled,
+  resolveTurnFailure,
+  type TurnStatus,
+} from "@/lib/turn-policy";
+
+export { MAX_CONCURRENT_TURNS } from "@/lib/turn-policy";
+export type { TurnStatus } from "@/lib/turn-policy";
 
 export type SendMessageInput =
-  string | { content: string; attachments?: PendingAttachment[] };
+  | string
+  | { content: string; attachments?: PendingAttachment[] };
 
 export interface BranchInfo {
   index: number;
   count: number;
 }
 
+interface TurnSession {
+  turnId: string;
+  threadId: string;
+  status: TurnStatus;
+  controller: AbortController;
+  completion: Promise<void>;
+  resolveCompletion: () => void;
+  completed: boolean;
+  content: string;
+  toolCalls: ToolCall[];
+  thinking: string;
+  thinkingStartTime: number | null;
+  thinkingEndTime: number | null;
+  settings: Settings;
+  searchEnabled: boolean;
+}
+
 interface ChatContextValue {
   messages: DBMessage[];
   branchInfo: Record<string, BranchInfo>;
   isStreaming: boolean;
+  turnStatus: TurnStatus | null;
+  activeTurnCount: number;
   streamingContent: string;
   streamingThinking: string;
   thinkingStartTime: number | null;
   streamingToolCalls: ToolCall[];
   error: string | null;
+  isConfigured: boolean;
+  keysLocked: boolean;
+  profileMissing: boolean;
+  searchEnabled: boolean;
+  searchAvailable: boolean;
+  toggleSearchEnabled: () => Promise<void>;
   sendMessage: (input: SendMessageInput) => Promise<void>;
-  stopStreaming: () => void;
+  stopStreaming: () => Promise<void>;
+  deleteThread: (threadId: string) => Promise<void>;
+  abortAllTurns: () => Promise<void>;
   regenerate: () => Promise<void>;
   editMessage: (
     messageId: string,
@@ -72,318 +121,276 @@ const ChatContext = createContext<ChatContextValue | null>(null);
 export function ChatProvider({ children }: { children: React.ReactNode }) {
   const {
     currentThreadId,
-    createNewThread,
-    updateThreadTitle,
+    currentConversationId,
+    draftThreadId,
+    activateDraftThread,
+    syncAfterDelete,
     switchThread,
     refreshThreads,
-    removeThread,
     threads,
-    isLoading: threadsLoading,
   } = useThreads();
-  const { settings, activeProfileId } = useSettings();
+  const { profiles, activeProfileId, keysLocked } = useSettings();
   const [allMessages, setAllMessages] = useState<DBMessage[]>([]);
-  const [activeLeafId, setActiveLeafId] = useState<string | undefined>(
-    undefined,
-  );
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingContent, setStreamingContent] = useState("");
-  const [streamingThinking, setStreamingThinking] = useState("");
-  const [thinkingStartTime, setThinkingStartTime] = useState<number | null>(
-    null,
-  );
-  const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCall[]>([]);
+  const [activeLeafId, setActiveLeafId] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
-  // One AbortController per streaming thread so background turns on other
-  // threads can be aborted independently (never clobbered by a newer turn).
-  const abortMap = useRef<Map<string, AbortController>>(new Map());
-
-  // Thread being created by an in-flight sendMessage. The thread-change
-  // effect must not reload it concurrently: that read can land between
-  // addMessage's two DB writes and race the local append into a
-  // duplicated first message (ghost 1/2 branch switcher).
-  const creatingThreadRef = useRef<string | null>(null);
-
+  const [, invalidateSessions] = useReducer((value) => value + 1, 0);
+  const sessionsRef = useRef<Map<string, TurnSession>>(new Map());
+  const draftSearchOverridesRef = useRef<Map<string, boolean>>(new Map());
   const currentThreadIdRef = useRef(currentThreadId);
-  useEffect(() => {
-    currentThreadIdRef.current = currentThreadId;
-  }, [currentThreadId]);
+  const currentConversationIdRef = useRef(currentConversationId);
+  currentThreadIdRef.current = currentThreadId;
+  currentConversationIdRef.current = currentConversationId;
 
-  // Per-thread streaming state cache
-  const streamingStateMap = useRef<
-    Map<
-      string,
-      {
-        content: string;
-        toolCalls: ToolCall[];
-        thinking: string;
-        thinkingStartTime: number | null;
-        thinkingEndTime: number | null;
-      }
-    >
-  >(new Map());
+  const currentThread = useMemo(
+    () => threads.find((thread) => thread.id === currentThreadId),
+    [currentThreadId, threads],
+  );
+  const activeProfile = useMemo(
+    () => profiles.find((profile) => profile.id === activeProfileId),
+    [activeProfileId, profiles],
+  );
+  const currentProfile = useMemo(() => {
+    if (currentThread?.configId) {
+      return profiles.find((profile) => profile.id === currentThread.configId);
+    }
+    return activeProfile;
+  }, [activeProfile, currentThread?.configId, profiles]);
+  const profileMissing = Boolean(currentThread?.configId && !currentProfile);
+  const currentSettings = useMemo(
+    () => (currentProfile ? profileToSettings(currentProfile) : null),
+    [currentProfile],
+  );
+  const searchEnabled = resolveSearchEnabled({
+    thread: currentThread,
+    draftOverride: draftSearchOverridesRef.current.get(draftThreadId),
+    profileDefault: currentSettings?.searchEnabledByDefault,
+  });
+  const searchAvailable = Boolean(
+    currentSettings &&
+      !keysLocked &&
+      hasSearchApiKey(settingsToToolContext(currentSettings, searchEnabled)),
+  );
+  const isConfigured = Boolean(
+    currentSettings?.baseUrl && currentSettings?.model && !profileMissing,
+  );
 
-  // Active branch path shown in the UI and sent as LLM history
+  const visibleSession = sessionsRef.current.get(currentConversationId);
+  const isStreaming = Boolean(visibleSession);
+
   const messages = useMemo(
     () => getActivePath(allMessages, activeLeafId),
-    [allMessages, activeLeafId],
+    [activeLeafId, allMessages],
   );
 
-  // Branch position for user messages on the active path that have siblings
   const branchInfo = useMemo(() => {
     const info: Record<string, BranchInfo> = {};
-    for (const m of messages) {
-      if (m.role !== "user") continue;
-      const siblings = getSiblings(allMessages, m);
+    for (const message of messages) {
+      if (message.role !== "user") continue;
+      const siblings = getSiblings(allMessages, message);
       if (siblings.length > 1) {
-        info[m.id] = {
-          index: siblings.findIndex((s) => s.id === m.id) + 1,
+        info[message.id] = {
+          index: siblings.findIndex((sibling) => sibling.id === message.id) + 1,
           count: siblings.length,
         };
       }
     }
     return info;
-  }, [messages, allMessages]);
+  }, [allMessages, messages]);
 
   const reloadThread = useCallback(async (threadId: string) => {
-    const [msgs, thread] = await Promise.all([
+    const [loadedMessages, thread] = await Promise.all([
       getMessages(threadId),
       getThread(threadId),
     ]);
-    setAllMessages(msgs);
+    if (currentThreadIdRef.current !== threadId) return;
+    setAllMessages(loadedMessages);
     setActiveLeafId(thread?.activeLeafId);
   }, []);
 
-  // Append a freshly persisted message to local state unless a concurrent
-  // reload already delivered it (reloads race the manual appends).
-  const appendMessageLocal = useCallback((msg: DBMessage) => {
-    setAllMessages((prev) =>
-      prev.some((m) => m.id === msg.id) ? prev : [...prev, msg],
-    );
-    setActiveLeafId(msg.id);
-  }, []);
-
-  // Load messages and restore streaming state when thread changes
   useEffect(() => {
     setError(null);
     if (!currentThreadId) {
       setAllMessages([]);
       setActiveLeafId(undefined);
-      setIsStreaming(false);
-      setStreamingContent("");
-      setStreamingThinking("");
-      setThinkingStartTime(null);
-      setStreamingToolCalls([]);
+      invalidateSessions();
       return;
     }
-    // Restore streaming state from cache if this thread is still streaming
-    const cached = streamingStateMap.current.get(currentThreadId);
-    if (cached) {
-      setIsStreaming(true);
-      setStreamingContent(cached.content);
-      setStreamingThinking(cached.thinking);
-      setThinkingStartTime(cached.thinkingStartTime);
-      setStreamingToolCalls(cached.toolCalls);
-    } else {
-      setIsStreaming(false);
-      setStreamingContent("");
-      setStreamingThinking("");
-      setThinkingStartTime(null);
-      setStreamingToolCalls([]);
+    void reloadThread(currentThreadId).catch(console.error);
+    invalidateSessions();
+  }, [currentThreadId, currentConversationId, reloadThread]);
+
+  useEffect(() => {
+    for (const id of draftSearchOverridesRef.current.keys()) {
+      if (id !== draftThreadId) draftSearchOverridesRef.current.delete(id);
     }
-    // Skip the initial reload of a thread sendMessage is creating right
-    // now — sendMessage maintains local state itself for that thread.
-    if (creatingThreadRef.current === currentThreadId) return;
-    reloadThread(currentThreadId).catch(console.error);
-  }, [currentThreadId, reloadThread]);
+  }, [draftThreadId]);
 
-  const clearError = useCallback(() => setError(null), []);
+  const appendMessageLocal = useCallback((message: DBMessage) => {
+    if (currentConversationIdRef.current !== message.threadId) return;
+    setAllMessages((current) =>
+      current.some((item) => item.id === message.id)
+        ? current
+        : [...current, message],
+    );
+    setActiveLeafId(message.id);
+  }, []);
 
-  // Authoritative per-thread streaming check (the isStreaming state only
-  // mirrors the currently visible thread).
-  const isThreadStreaming = useCallback(
-    (threadId: string | null | undefined) =>
-      !!threadId && streamingStateMap.current.has(threadId),
+  const isOwner = useCallback(
+    (session: TurnSession) =>
+      sessionsRef.current.get(session.threadId) === session,
     [],
   );
 
-  // Abort and clean up streams whose thread was deleted, so a background
-  // turn stops writing orphan messages into a removed thread.
-  useEffect(() => {
-    if (threadsLoading) return;
-    const alive = new Set(threads.map((t) => t.id));
-    for (const id of abortMap.current.keys()) {
-      if (alive.has(id) || creatingThreadRef.current === id) continue;
-      abortMap.current.get(id)?.abort();
-      abortMap.current.delete(id);
-      streamingStateMap.current.delete(id);
-    }
-  }, [threads, threadsLoading]);
+  const reserveSession = useCallback(
+    (
+      threadId: string,
+      settings: Settings,
+      turnSearchEnabled: boolean,
+    ): TurnSession => {
+      const rejection = checkTurnAdmission(sessionsRef.current, threadId);
+      if (rejection) throw new Error(rejection);
+      let resolveCompletion = () => {};
+      const completion = new Promise<void>((resolve) => {
+        resolveCompletion = resolve;
+      });
+      const session: TurnSession = {
+        turnId: uuidv4(),
+        threadId,
+        status: "preparing",
+        controller: new AbortController(),
+        completion,
+        resolveCompletion,
+        completed: false,
+        content: "",
+        toolCalls: [],
+        thinking: "",
+        thinkingStartTime: null,
+        thinkingEndTime: null,
+        settings: { ...settings },
+        searchEnabled: turnSearchEnabled,
+      };
+      sessionsRef.current.set(threadId, session);
+      invalidateSessions();
+      return session;
+    },
+    [],
+  );
 
-  // Stop only the currently visible thread's stream; background streams on
-  // other threads keep running and stay stoppable when switched back to.
-  const stopStreaming = useCallback(() => {
-    const threadId = currentThreadIdRef.current;
-    if (threadId) {
-      abortMap.current.get(threadId)?.abort();
-      abortMap.current.delete(threadId);
-      streamingStateMap.current.delete(threadId);
+  const finishSession = useCallback((session: TurnSession) => {
+    if (session.completed) return;
+    session.completed = true;
+    if (sessionsRef.current.get(session.threadId) === session) {
+      sessionsRef.current.delete(session.threadId);
     }
-    setIsStreaming(false);
-    setStreamingContent("");
-    setStreamingThinking("");
-    setThinkingStartTime(null);
-    setStreamingToolCalls([]);
+    session.resolveCompletion();
+    invalidateSessions();
   }, []);
 
-  // Runs one ReAct turn: streams the LLM response, executes tools, persists
-  // tool/assistant/error messages chained via parentId starting after
-  // startParentId. Shared by sendMessage / regenerate / editMessage.
+  const resolveTurnConfig = useCallback(
+    (thread: Thread | undefined) => {
+      const profile = thread?.configId
+        ? profiles.find((item) => item.id === thread.configId)
+        : profiles.find((item) => item.id === activeProfileId);
+      if (!profile) {
+        throw new Error(
+          thread?.configId
+            ? "This thread's profile is missing. Select a profile first."
+            : "Select or create a profile first",
+        );
+      }
+      if (keysLocked) throw new Error("Unlock API keys first");
+      const settings = profileToSettings(profile);
+      if (!settings.baseUrl || !settings.model) {
+        throw new Error("Set Base URL and Model first");
+      }
+      const turnSearchEnabled = resolveSearchEnabled({
+        thread,
+        draftOverride: draftSearchOverridesRef.current.get(draftThreadId),
+        profileDefault: settings.searchEnabledByDefault,
+      });
+      return { profile, settings, searchEnabled: turnSearchEnabled };
+    },
+    [activeProfileId, draftThreadId, keysLocked, profiles],
+  );
+
   const runAssistantTurn = useCallback(
     async (
-      threadId: string,
+      session: TurnSession,
       chatMessages: ChatMessage[],
       startParentId: string,
     ) => {
-      // Thread guard helpers
-      const isCurrentThread = () => currentThreadIdRef.current === threadId;
-
-      // parentId chain through this turn; closure-local so background
-      // streaming on a non-visible thread stays correct.
-      let lastMsgId = startParentId;
-
-      const persistMessage = async (msg: DBMessage) => {
-        await addMessage(msg);
-        lastMsgId = msg.id;
-        if (isCurrentThread()) {
-          appendMessageLocal(msg);
-        }
-      };
-
-      // One state object for the whole turn. The map only holds a reference
-      // for cross-thread restore; stopStreaming may delete the map entry, but
-      // this closure keeps the object alive (the abort partial-persist reads
-      // it). Updaters mutate turnState and never re-set the map — otherwise a
-      // late token after stopStreaming would resurrect a deleted entry and
-      // make isThreadStreaming wrongly report the thread as busy.
-      const turnState = {
-        content: "",
-        toolCalls: [] as ToolCall[],
-        thinking: "",
-        thinkingStartTime: null as number | null,
-        thinkingEndTime: null as number | null,
-      };
-      const isTurnLive = () =>
-        streamingStateMap.current.get(threadId) === turnState;
-
-      // rAF batching: stream callbacks mutate turnState synchronously and
-      // request at most one React state flush per frame. rafId is a turn-local
-      // closure var (not a shared ref) so concurrent background turns never
-      // cancel each other's flushes.
+      if (!isOwner(session) || session.controller.signal.aborted) {
+        finishSession(session);
+        return;
+      }
+      session.status = "running";
+      invalidateSessions();
+      let lastMessageId = startParentId;
       let rafId: number | null = null;
-      const flushStreamingUI = () => {
-        rafId = null;
-        if (!isCurrentThread() || !isTurnLive()) return;
-        setStreamingContent(turnState.content);
-        setStreamingThinking(turnState.thinking);
-        setThinkingStartTime(turnState.thinkingStartTime);
-        setStreamingToolCalls(turnState.toolCalls);
-      };
-      const scheduleFlush = () => {
-        if (!isCurrentThread() || !isTurnLive() || rafId !== null) return;
-        rafId = requestAnimationFrame(flushStreamingUI);
-      };
-      const forceFlush = () => {
-        if (rafId !== null) {
-          cancelAnimationFrame(rafId);
+
+      const isVisible = () =>
+        currentConversationIdRef.current === session.threadId;
+      const scheduleUpdate = () => {
+        if (!isVisible() || !isOwner(session) || rafId !== null) return;
+        rafId = requestAnimationFrame(() => {
           rafId = null;
+          if (isVisible() && isOwner(session)) invalidateSessions();
+        });
+      };
+      const forceUpdate = () => {
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        rafId = null;
+        if (isVisible()) invalidateSessions();
+      };
+      const resetStreamState = () => {
+        session.content = "";
+        session.toolCalls = [];
+        session.thinking = "";
+        session.thinkingStartTime = null;
+        session.thinkingEndTime = null;
+        forceUpdate();
+      };
+      const persistMessage = async (message: DBMessage) => {
+        if (!isOwner(session) || session.status === "deleting") {
+          throw new Error("Turn is no longer writable");
         }
-        flushStreamingUI();
+        await addMessage(message);
+        lastMessageId = message.id;
+        appendMessageLocal(message);
       };
-
-      const updateStreamingContent = (updater: (prev: string) => string) => {
-        // The first content token closes the thinking window.
-        if (turnState.thinkingStartTime && !turnState.thinkingEndTime) {
-          turnState.thinkingEndTime = Date.now();
-        }
-        turnState.content = updater(turnState.content);
-        scheduleFlush();
-      };
-
-      const updateStreamingThinking = (token: string) => {
-        if (!turnState.thinkingStartTime) {
-          turnState.thinkingStartTime = Date.now();
-        }
-        turnState.thinking += token;
-        scheduleFlush();
-      };
-
-      const updateStreamingToolCalls = (toolCalls: ToolCall[]) => {
-        turnState.toolCalls = toolCalls;
-        scheduleFlush();
-      };
-
-      // Reset at each iteration boundary: an abort then only captures the
-      // current iteration's partial, and the just-persisted assistant message
-      // isn't double-shown by a stale streaming snapshot. forceFlush is
-      // synchronous so the cleared state paints in the same tick as the
-      // persisted message append.
-      const resetTurnState = () => {
-        turnState.content = "";
-        turnState.thinking = "";
-        turnState.thinkingStartTime = null;
-        turnState.thinkingEndTime = null;
-        turnState.toolCalls = [];
-        forceFlush();
-      };
-
       const appendErrorMessage = async (message: string) => {
-        const text = (message ?? "").toString();
-        const trimmed = text.trim();
-        const errorText = trimmed || "Unknown error";
-        const errorMsg: DBMessage = {
+        await persistMessage({
           id: uuidv4(),
-          threadId,
+          threadId: session.threadId,
           role: "assistant",
           name: "error",
-          content: errorText,
+          content: message.trim() || "Unknown error",
           createdAt: Date.now(),
-          parentId: lastMsgId,
-        };
-        await persistMessage(errorMsg);
+          parentId: lastMessageId,
+        });
       };
 
-      // Start streaming
-      streamingStateMap.current.set(threadId, turnState);
-      if (isCurrentThread()) {
-        setIsStreaming(true);
-        setStreamingContent("");
-        setStreamingThinking("");
-        setThinkingStartTime(null);
-        setStreamingToolCalls([]);
-      }
-      setError(null);
-
-      const abortController = new AbortController();
-      abortMap.current.set(threadId, abortController);
-
-      const toolContext = settingsToToolContext(settings);
-      const toolRegistry = createToolRegistry(toolContext);
-
-      const systemPrompt = buildSystemPrompt(
-        settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-        settings.searchEnabled,
-      );
-
       try {
+        const toolContext = settingsToToolContext(
+          session.settings,
+          session.searchEnabled,
+          session.controller.signal,
+        );
+        const toolRegistry = createToolRegistry(toolContext);
+        const effectiveSearchEnabled = isSearchToolEnabled(toolContext);
+        const systemPrompt = buildSystemPrompt(
+          session.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+          effectiveSearchEnabled,
+        );
         await runReactLoop(
           {
-            provider: settings.provider,
-            baseUrl: settings.baseUrl,
-            apiKey: settings.apiKey,
-            model: settings.model,
-            requestMode: settings.requestMode ?? "auto",
-            temperature: settings.temperature,
-            maxTokens: settings.maxTokens,
+            provider: session.settings.provider,
+            baseUrl: session.settings.baseUrl,
+            apiKey: session.settings.apiKey,
+            model: session.settings.model,
+            requestMode: session.settings.requestMode,
+            temperature: session.settings.temperature,
+            maxTokens: session.settings.maxTokens,
           },
           chatMessages,
           toolRegistry,
@@ -391,288 +398,415 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           systemPrompt,
           {
             onToken: (token) => {
-              updateStreamingContent((prev) => prev + token);
+              if (session.thinkingStartTime && !session.thinkingEndTime) {
+                session.thinkingEndTime = Date.now();
+              }
+              session.content += token;
+              scheduleUpdate();
             },
             onThinkingToken: (token) => {
-              updateStreamingThinking(token);
+              if (!session.thinkingStartTime) session.thinkingStartTime = Date.now();
+              session.thinking += token;
+              scheduleUpdate();
             },
-            onToolCallStart: (tcs) => {
-              updateStreamingToolCalls(tcs);
+            onToolCallStart: (toolCalls) => {
+              session.toolCalls = toolCalls;
+              scheduleUpdate();
             },
-            onAssistantMessage: async (aMsg) => {
-              // Nothing streamed at all (no text, no tool calls, no thinking):
-              // don't persist an empty bubble; just clear the partial snapshot.
+            onAssistantMessage: async (assistantMessage) => {
+              if (session.controller.signal.aborted) throw new Error("Aborted");
               if (
-                !aMsg.content &&
-                !aMsg.toolCalls?.length &&
-                !aMsg.reasoningContent
+                !assistantMessage.content &&
+                !assistantMessage.toolCalls?.length &&
+                !assistantMessage.reasoningContent
               ) {
-                resetTurnState();
+                resetStreamState();
                 return;
               }
-              const dbMsg: DBMessage = {
+              await persistMessage({
                 id: uuidv4(),
-                threadId,
+                threadId: session.threadId,
                 role: "assistant",
-                content: aMsg.content,
-                toolCalls: aMsg.toolCalls,
+                content: assistantMessage.content,
+                toolCalls: assistantMessage.toolCalls,
                 createdAt: Date.now(),
-                parentId: lastMsgId,
-                ...(aMsg.reasoningContent
+                parentId: lastMessageId,
+                ...(assistantMessage.reasoningContent
                   ? {
-                      reasoningContent: aMsg.reasoningContent,
-                      thinkingDuration: aMsg.thinkingDuration,
+                      reasoningContent: assistantMessage.reasoningContent,
+                      thinkingDuration: assistantMessage.thinkingDuration,
                     }
                   : {}),
-              };
-              await persistMessage(dbMsg);
-              // Iteration boundary: clear partial so the next iteration (or an
-              // abort) starts clean and this persisted message isn't shadowed
-              // by a stale streaming snapshot.
-              resetTurnState();
+              });
+              resetStreamState();
             },
             onToolResult: async (toolCallId, name, result) => {
-              const toolResultMsg: DBMessage = {
+              if (session.controller.signal.aborted) throw new Error("Aborted");
+              await persistMessage({
                 id: uuidv4(),
-                threadId,
+                threadId: session.threadId,
                 role: "tool",
                 content: result,
                 toolCallId,
                 name,
                 createdAt: Date.now(),
-                parentId: lastMsgId,
-              };
-              await persistMessage(toolResultMsg);
+                parentId: lastMessageId,
+              });
             },
             onDone: () => {},
           },
-          abortController.signal,
+          session.controller.signal,
         );
-      } catch (err) {
-        // A user-initiated abort can surface as Error("Aborted"), a fetch
-        // DOMException, or a reader error — signal.aborted is the one
-        // authoritative check.
-        if (abortController.signal.aborted) {
-          // Stop: keep the current iteration's streamed partial as a normal
-          // assistant message. Never persist turnState.toolCalls — with early
-          // tool-call indication those may be half-built (args:{}) and would
-          // have no matching tool result, making replay invalid.
-          if (turnState.content || turnState.thinking) {
-            const partialMsg: DBMessage = {
-              id: uuidv4(),
-              threadId,
-              role: "assistant",
-              content: turnState.content,
-              createdAt: Date.now(),
-              parentId: lastMsgId,
-              ...(turnState.thinking
-                ? {
-                    reasoningContent: turnState.thinking,
-                    thinkingDuration: turnState.thinkingStartTime
-                      ? (turnState.thinkingEndTime ?? Date.now()) -
-                        turnState.thinkingStartTime
-                      : undefined,
-                  }
-                : {}),
-            };
-            await persistMessage(partialMsg).catch(console.error);
-          }
-        } else {
-          // Single error path: the providers throw, so any non-abort error
-          // arrives here.
-          const e = err instanceof Error ? err : new Error(String(err));
-          await appendErrorMessage(e.message);
-          if (isCurrentThread()) {
-            setError(e.message);
-          }
+      } catch (caught) {
+        const action = resolveTurnFailure({
+          aborted: session.controller.signal.aborted,
+          status: sessionsRef.current.get(session.threadId)?.status,
+          hasPartialContent: Boolean(session.content || session.thinking),
+          isOwner: isOwner(session),
+        });
+        if (action === "persist-partial") {
+          await persistMessage({
+            id: uuidv4(),
+            threadId: session.threadId,
+            role: "assistant",
+            content: session.content,
+            createdAt: Date.now(),
+            parentId: lastMessageId,
+            ...(session.thinking
+              ? {
+                  reasoningContent: session.thinking,
+                  thinkingDuration: session.thinkingStartTime
+                    ? (session.thinkingEndTime ?? Date.now()) -
+                      session.thinkingStartTime
+                    : undefined,
+                }
+              : {}),
+          }).catch(console.error);
+        } else if (action === "append-error") {
+          const exception =
+            caught instanceof Error ? caught : new Error(String(caught));
+          await appendErrorMessage(exception.message).catch(console.error);
+          if (isVisible()) setError(exception.message);
         }
       } finally {
-        if (rafId !== null) {
-          cancelAnimationFrame(rafId);
-          rafId = null;
-        }
-        streamingStateMap.current.delete(threadId);
-        if (abortMap.current.get(threadId) === abortController) {
-          abortMap.current.delete(threadId);
-        }
-
-        if (isCurrentThread()) {
-          setIsStreaming(false);
-          setStreamingContent("");
-          setStreamingThinking("");
-          setThinkingStartTime(null);
-          setStreamingToolCalls([]);
-          // Reload from DB to get clean state
-          await reloadThread(threadId);
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        finishSession(session);
+        if (currentThreadIdRef.current === session.threadId) {
+          await reloadThread(session.threadId).catch(console.error);
         }
       }
     },
-    [settings, reloadThread, appendMessageLocal],
+    [appendMessageLocal, finishSession, isOwner, reloadThread],
   );
 
   const sendMessage = useCallback(
     async (input: SendMessageInput) => {
-      if (isThreadStreaming(currentThreadId)) return;
-
       const content = typeof input === "string" ? input : (input.content ?? "");
       const pendingAttachments =
         typeof input === "string" ? [] : (input.attachments ?? []);
+      const selectedThreadId = currentThreadId;
+      const conversationId = currentConversationId;
+      const thread = selectedThreadId
+        ? await getThread(selectedThreadId)
+        : undefined;
+      if (selectedThreadId && !thread) throw new Error("Thread no longer exists");
+      const turnConfig = resolveTurnConfig(thread);
+      const session = reserveSession(
+        conversationId,
+        turnConfig.settings,
+        turnConfig.searchEnabled,
+      );
 
-      let threadId = currentThreadId;
-      let createdThreadId: string | null = null;
-      let priorPath: DBMessage[] = [];
-      if (!threadId) {
-        threadId = await createNewThread(activeProfileId ?? undefined);
-        createdThreadId = threadId;
-        creatingThreadRef.current = threadId;
-      } else {
-        const [existing, thread] = await Promise.all([
-          getMessages(threadId),
-          getThread(threadId),
-        ]);
-        priorPath = getActivePath(existing, thread?.activeLeafId);
-      }
-
-      // Upload attachments (base64 data URLs for now)
       let attachments: Attachment[] = [];
-      // Save user message at the end of the active branch
-      const userMsg: DBMessage = {
-        id: uuidv4(),
-        threadId,
-        role: "user",
-        content,
-        createdAt: Date.now(),
-        parentId:
-          priorPath.length > 0 ? priorPath[priorPath.length - 1].id : null,
-      };
+      let userMessageCommitted = false;
       try {
         if (pendingAttachments.length > 0) {
           attachments = await uploadAttachments(pendingAttachments);
-          if (attachments.length > 0) userMsg.attachments = attachments;
         }
-        await addMessage(userMsg);
-        appendMessageLocal(userMsg);
-      } catch (err) {
-        // Never leave a freshly-created thread empty in the list/DB when its
-        // first message failed to persist. removeThread also clears the URL
-        // threadId (via ThreadProvider), whose thread-change effect resets the
-        // local message state. Rethrow so the composer restores the input.
-        if (createdThreadId) {
-          await removeThread(createdThreadId).catch(console.error);
+        if (session.controller.signal.aborted || session.status !== "preparing") {
+          throw new Error("Aborted");
         }
-        throw err;
-      } finally {
-        // Always release the guard, even if upload/persist throws, so the
-        // thread-change effect isn't permanently blocked from reloading it.
-        creatingThreadRef.current = null;
-      }
 
-      // Auto-generate title from first message
-      if (priorPath.length === 0) {
-        const title =
-          content.length > 50
-            ? content.slice(0, 50) + "..."
-            : content || attachments[0]?.name || "New Chat";
-        await updateThreadTitle(threadId, title);
-      }
+        let priorPath: DBMessage[] = [];
+        if (thread) {
+          const existingMessages = await getMessages(thread.id);
+          priorPath = getActivePath(existingMessages, thread.activeLeafId);
+        }
+        if (session.controller.signal.aborted || session.status !== "preparing") {
+          throw new Error("Aborted");
+        }
+        const userMessage: DBMessage = {
+          id: uuidv4(),
+          threadId: conversationId,
+          role: "user",
+          content,
+          createdAt: Date.now(),
+          parentId:
+            priorPath.length > 0 ? priorPath[priorPath.length - 1].id : null,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        };
+        const chatHistory = buildHistory([...priorPath, userMessage]);
 
-      const chatMessages = buildHistory([...priorPath, userMsg]);
-      await runAssistantTurn(threadId, chatMessages, userMsg.id);
+        if (thread) {
+          await addMessage(userMessage, turnConfig.profile.id);
+        } else {
+          const title =
+            content.length > 50
+              ? `${content.slice(0, 50)}...`
+              : content || attachments[0]?.name || "New Chat";
+          const now = Date.now();
+          await createThreadWithFirstMessage(
+            {
+              id: conversationId,
+              title,
+              configId: turnConfig.profile.id,
+              searchEnabled: turnConfig.searchEnabled,
+              createdAt: now,
+              updatedAt: now,
+            },
+            userMessage,
+          );
+          draftSearchOverridesRef.current.delete(conversationId);
+        }
+        userMessageCommitted = true;
+        appendMessageLocal(userMessage);
+
+        if (!thread) {
+          await activateDraftThread(conversationId).catch((caught) => {
+            console.error("Failed to activate the new thread:", caught);
+          });
+        }
+
+        if (thread && priorPath.length === 0) {
+          const title =
+            content.length > 50
+              ? `${content.slice(0, 50)}...`
+              : content || attachments[0]?.name || "New Chat";
+          await updateThread(thread.id, { title })
+            .then(refreshThreads)
+            .catch((caught) => {
+              console.error("Failed to update the thread title:", caught);
+            });
+        }
+        await runAssistantTurn(
+          session,
+          chatHistory,
+          userMessage.id,
+        );
+      } catch (caught) {
+        if (isOwner(session)) finishSession(session);
+        if (userMessageCommitted) {
+          const message =
+            caught instanceof Error ? caught.message : String(caught);
+          console.error("Assistant turn failed after saving the user message:", caught);
+          if (currentConversationIdRef.current === conversationId) {
+            setError(message);
+          }
+          return;
+        }
+        throw caught;
+      }
     },
     [
-      isThreadStreaming,
-      currentThreadId,
-      createNewThread,
-      removeThread,
-      updateThreadTitle,
-      activeProfileId,
-      runAssistantTurn,
+      activateDraftThread,
       appendMessageLocal,
+      currentConversationId,
+      currentThreadId,
+      finishSession,
+      isOwner,
+      refreshThreads,
+      reserveSession,
+      resolveTurnConfig,
+      runAssistantTurn,
     ],
   );
 
-  // Edit a previous user message: create a sibling branch and generate a new
-  // reply on it. Without attachmentEdit the original attachments carry over;
-  // with it, the new message gets kept originals + newly uploaded files.
+  const stopStreaming = useCallback(async () => {
+    const session = sessionsRef.current.get(currentConversationIdRef.current);
+    if (!session) return;
+    if (session.status === "preparing" || session.status === "running") {
+      session.status = "stopping";
+      session.controller.abort();
+      invalidateSessions();
+    }
+    await session.completion;
+  }, []);
+
+  const deleteThread = useCallback(
+    async (threadId: string) => {
+      const session = sessionsRef.current.get(threadId);
+      if (session) {
+        session.status = "deleting";
+        session.controller.abort();
+        invalidateSessions();
+        await session.completion;
+      }
+      await deleteThreadFromDb(threadId);
+      await syncAfterDelete(threadId);
+    },
+    [syncAfterDelete],
+  );
+
+  const abortAllTurns = useCallback(async () => {
+    const sessions = Array.from(sessionsRef.current.values());
+    for (const session of sessions) {
+      session.status = "deleting";
+      session.controller.abort();
+    }
+    invalidateSessions();
+    await Promise.all(sessions.map((session) => session.completion));
+  }, []);
+
   const editMessage = useCallback(
     async (
       messageId: string,
       newContent: string,
       attachmentEdit?: AttachmentEdit,
     ) => {
-      if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
-      const threadId = currentThreadId;
-      const original = allMessages.find((m) => m.id === messageId);
-      if (!original || original.role !== "user") return;
-
-      let attachments = original.attachments ?? [];
-      if (attachmentEdit) {
-        const uploaded =
-          attachmentEdit.added.length > 0
-            ? await uploadAttachments(attachmentEdit.added)
-            : [];
-        attachments = [...attachmentEdit.kept, ...uploaded];
+      if (!currentThreadId) throw new Error("Select a thread first");
+      const thread = await getThread(currentThreadId);
+      if (!thread) throw new Error("Thread no longer exists");
+      const turnConfig = resolveTurnConfig(thread);
+      const session = reserveSession(
+        thread.id,
+        turnConfig.settings,
+        turnConfig.searchEnabled,
+      );
+      let editedMessageCommitted = false;
+      try {
+        const original = allMessages.find((message) => message.id === messageId);
+        if (!original || original.role !== "user") {
+          throw new Error("Message no longer exists");
+        }
+        let attachments = original.attachments ?? [];
+        if (attachmentEdit) {
+          const uploaded =
+            attachmentEdit.added.length > 0
+              ? await uploadAttachments(attachmentEdit.added)
+              : [];
+          attachments = [...attachmentEdit.kept, ...uploaded];
+        }
+        if (session.controller.signal.aborted || session.status !== "preparing") {
+          throw new Error("Aborted");
+        }
+        const newMessage: DBMessage = {
+          id: uuidv4(),
+          threadId: thread.id,
+          role: "user",
+          content: newContent,
+          createdAt: Date.now(),
+          parentId: original.parentId ?? null,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        };
+        const chatHistory = buildHistory(
+          getActivePath([...allMessages, newMessage], newMessage.id),
+        );
+        await addMessage(newMessage);
+        editedMessageCommitted = true;
+        appendMessageLocal(newMessage);
+        await runAssistantTurn(
+          session,
+          chatHistory,
+          newMessage.id,
+        );
+      } catch (caught) {
+        if (isOwner(session)) finishSession(session);
+        if (editedMessageCommitted) {
+          const message =
+            caught instanceof Error ? caught.message : String(caught);
+          console.error("Assistant turn failed after saving the edit:", caught);
+          if (currentConversationIdRef.current === thread.id) setError(message);
+          return;
+        }
+        throw caught;
       }
-
-      const newMsg: DBMessage = {
-        id: uuidv4(),
-        threadId,
-        role: "user",
-        content: newContent,
-        createdAt: Date.now(),
-        parentId: original.parentId ?? null,
-        ...(attachments.length > 0 ? { attachments } : {}),
-      };
-      await addMessage(newMsg);
-      appendMessageLocal(newMsg);
-
-      const fresh = await getMessages(threadId);
-      const path = getActivePath(fresh, newMsg.id);
-      await runAssistantTurn(threadId, buildHistory(path), newMsg.id);
     },
-    [isThreadStreaming, currentThreadId, allMessages, runAssistantTurn, appendMessageLocal],
+    [
+      allMessages,
+      appendMessageLocal,
+      currentThreadId,
+      finishSession,
+      isOwner,
+      reserveSession,
+      resolveTurnConfig,
+      runAssistantTurn,
+    ],
   );
 
-  // Switch to the previous/next sibling branch at the given message,
-  // landing on that branch's most recent leaf.
+  const regenerate = useCallback(async () => {
+    if (!currentThreadId) throw new Error("Select a thread first");
+    const thread = await getThread(currentThreadId);
+    if (!thread) throw new Error("Thread no longer exists");
+    const turnConfig = resolveTurnConfig(thread);
+    const session = reserveSession(
+      thread.id,
+      turnConfig.settings,
+      turnConfig.searchEnabled,
+    );
+    try {
+      await deleteLastAssistantMessages(thread.id);
+      const [remaining, updatedThread] = await Promise.all([
+        getMessages(thread.id),
+        getThread(thread.id),
+      ]);
+      if (currentThreadIdRef.current === thread.id) {
+        setAllMessages(remaining);
+        setActiveLeafId(updatedThread?.activeLeafId);
+      }
+      const path = getActivePath(remaining, updatedThread?.activeLeafId);
+      const lastMessage = path[path.length - 1];
+      if (!lastMessage || lastMessage.role !== "user") {
+        throw new Error("No user message to regenerate");
+      }
+      await runAssistantTurn(
+        session,
+        buildHistory(path),
+        lastMessage.id,
+      );
+    } catch (caught) {
+      if (isOwner(session)) finishSession(session);
+      throw caught;
+    }
+  }, [
+    currentThreadId,
+    finishSession,
+    isOwner,
+    reserveSession,
+    resolveTurnConfig,
+    runAssistantTurn,
+  ]);
+
   const switchBranch = useCallback(
     async (messageId: string, direction: "prev" | "next") => {
-      if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
-      const msg = allMessages.find((m) => m.id === messageId);
-      if (!msg) return;
-      const siblings = getSiblings(allMessages, msg);
-      const idx = siblings.findIndex((s) => s.id === messageId);
-      const targetIdx = direction === "prev" ? idx - 1 : idx + 1;
-      if (idx === -1 || targetIdx < 0 || targetIdx >= siblings.length) return;
-      const newLeafId = findLatestLeaf(allMessages, siblings[targetIdx].id);
-      // setActiveLeaf keeps updatedAt untouched so the thread list order
-      // doesn't jump when merely viewing another branch.
-      await setActiveLeaf(currentThreadId, newLeafId);
-      setActiveLeafId(newLeafId);
+      if (!currentThreadId || sessionsRef.current.has(currentThreadId)) return;
+      const message = allMessages.find((item) => item.id === messageId);
+      if (!message) return;
+      const siblings = getSiblings(allMessages, message);
+      const index = siblings.findIndex((sibling) => sibling.id === messageId);
+      const targetIndex = direction === "prev" ? index - 1 : index + 1;
+      if (index === -1 || targetIndex < 0 || targetIndex >= siblings.length) return;
+      const leafId = findLatestLeaf(allMessages, siblings[targetIndex].id);
+      await setActiveLeaf(currentThreadId, leafId);
+      setActiveLeafId(leafId);
     },
-    [isThreadStreaming, currentThreadId, allMessages],
+    [allMessages, currentThreadId],
   );
 
-  // Copy the active path up to and including the given assistant message
-  // into a brand-new thread, then switch to it.
   const forkThreadFromMessage = useCallback(
     async (messageId: string) => {
-      if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
-      const idx = messages.findIndex((m) => m.id === messageId);
-      if (idx === -1) return;
-      const pathSlice = messages.slice(0, idx + 1);
+      if (!currentThreadId || sessionsRef.current.has(currentThreadId)) return;
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index === -1) return;
       const sourceThread = await getThread(currentThreadId);
-
+      const path = messages.slice(0, index + 1);
       const newThreadId = uuidv4();
-      const idMap = new Map<string, string>();
-      for (const m of pathSlice) idMap.set(m.id, uuidv4());
-      const clonedMessages: DBMessage[] = pathSlice.map((m) => ({
-        ...m,
-        id: idMap.get(m.id)!,
+      const idMap = new Map(path.map((message) => [message.id, uuidv4()]));
+      const clonedMessages = path.map((message) => ({
+        ...message,
+        id: idMap.get(message.id)!,
         threadId: newThreadId,
-        parentId: m.parentId ? (idMap.get(m.parentId) ?? null) : null,
+        parentId: message.parentId ? (idMap.get(message.parentId) ?? null) : null,
       }));
-
       const now = Date.now();
       await forkThread(
         {
@@ -681,8 +815,9 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
           createdAt: now,
           updatedAt: now,
           activeLeafId: idMap.get(messageId)!,
-          ...(sourceThread?.configId
-            ? { configId: sourceThread.configId }
+          ...(sourceThread?.configId ? { configId: sourceThread.configId } : {}),
+          ...(sourceThread?.searchEnabled !== undefined
+            ? { searchEnabled: sourceThread.searchEnabled }
             : {}),
         },
         clonedMessages,
@@ -690,29 +825,22 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       await refreshThreads();
       switchThread(newThreadId);
     },
-    [isThreadStreaming, currentThreadId, messages, refreshThreads, switchThread],
+    [currentThreadId, messages, refreshThreads, switchThread],
   );
 
-  const regenerate = useCallback(async () => {
-    if (isThreadStreaming(currentThreadId) || !currentThreadId) return;
+  const toggleSearchEnabled = useCallback(async () => {
+    if (!currentProfile) throw new Error("Select a profile first");
+    const next = !searchEnabled;
+    if (currentThreadId) {
+      await setThreadSearchEnabled(currentThreadId, next);
+      await refreshThreads();
+    } else {
+      draftSearchOverridesRef.current.set(draftThreadId, next);
+      invalidateSessions();
+    }
+  }, [currentProfile, currentThreadId, draftThreadId, refreshThreads, searchEnabled]);
 
-    const threadId = currentThreadId;
-
-    // Delete trailing assistant + tool messages of the active branch
-    await deleteLastAssistantMessages(threadId);
-    const [remaining, thread] = await Promise.all([
-      getMessages(threadId),
-      getThread(threadId),
-    ]);
-    setAllMessages(remaining);
-    setActiveLeafId(thread?.activeLeafId);
-
-    const path = getActivePath(remaining, thread?.activeLeafId);
-    const lastMsg = path[path.length - 1];
-    if (!lastMsg || lastMsg.role !== "user") return;
-
-    await runAssistantTurn(threadId, buildHistory(path), lastMsg.id);
-  }, [isThreadStreaming, currentThreadId, runAssistantTurn]);
+  const clearError = useCallback(() => setError(null), []);
 
   return (
     <ChatContext.Provider
@@ -720,13 +848,23 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         messages,
         branchInfo,
         isStreaming,
-        streamingContent,
-        streamingThinking,
-        thinkingStartTime,
-        streamingToolCalls,
+        turnStatus: visibleSession?.status ?? null,
+        activeTurnCount: sessionsRef.current.size,
+        streamingContent: visibleSession?.content ?? "",
+        streamingThinking: visibleSession?.thinking ?? "",
+        thinkingStartTime: visibleSession?.thinkingStartTime ?? null,
+        streamingToolCalls: visibleSession?.toolCalls ?? [],
         error,
+        isConfigured,
+        keysLocked,
+        profileMissing,
+        searchEnabled,
+        searchAvailable,
+        toggleSearchEnabled,
         sendMessage,
         stopStreaming,
+        deleteThread,
+        abortAllTurns,
         regenerate,
         editMessage,
         switchBranch,
@@ -740,7 +878,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useChat() {
-  const ctx = useContext(ChatContext);
-  if (!ctx) throw new Error("useChat must be used within ChatProvider");
-  return ctx;
+  const context = useContext(ChatContext);
+  if (!context) throw new Error("useChat must be used within ChatProvider");
+  return context;
 }

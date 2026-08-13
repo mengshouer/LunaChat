@@ -1,16 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, RefreshCcw } from "lucide-react";
 import { toast } from "sonner";
-import { useSettings, type Settings } from "@/providers/SettingsProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Textarea } from "@/components/ui/textarea";
-import { UnlockDialog } from "./unlock-dialog";
+import { Switch } from "@/components/ui/switch";
 import type { SearchProviderId } from "@/lib/tools/net-search/types";
+import type { Settings } from "@/lib/settings-types";
 import { resolveLLMEndpoint } from "@/lib/llm/endpoints";
 import { createLLMHeaders } from "@/lib/llm/headers";
 import { normalizeModels, type ModelListItem } from "@/lib/llm/models";
@@ -34,25 +34,16 @@ function getOrigin(url: string): string {
   }
 }
 
-// Shown in place of a key input while API keys are passphrase-locked.
-function LockedKeyInput({ id }: { id: string }) {
-  const [unlockOpen, setUnlockOpen] = useState(false);
-  return (
-    <div className="flex gap-2">
-      <Input id={id} disabled value="Encrypted — unlock to view" />
-      <Button type="button" variant="outline" onClick={() => setUnlockOpen(true)}>
-        Unlock
-      </Button>
-      <UnlockDialog open={unlockOpen} onOpenChange={setUnlockOpen} />
-    </div>
-  );
+interface SettingsFormProps {
+  value: Settings;
+  onChange: (updates: Partial<Settings>) => void;
 }
 
-export function ProviderForm() {
-  const { settings, updateSettings, keysLocked } = useSettings();
+export function ProviderForm({ value: settings, onChange }: SettingsFormProps) {
   const [models, setModels] = useState<ModelListItem[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState("");
+  const fetchControllerRef = useRef<AbortController | null>(null);
 
   const requestUrl = useMemo(
     () => resolveLLMEndpoint(settings.baseUrl, settings.provider, "chat"),
@@ -60,9 +51,19 @@ export function ProviderForm() {
   );
 
   useEffect(() => {
+    fetchControllerRef.current?.abort();
+    fetchControllerRef.current = null;
     setModels([]);
+    setModelsLoading(false);
     setModelsError("");
   }, [settings.baseUrl, settings.provider]);
+
+  useEffect(
+    () => () => {
+      fetchControllerRef.current?.abort();
+    },
+    [],
+  );
 
   function getErrorMessage(payload: unknown, status: number): string {
     if (payload && typeof payload === "object") {
@@ -88,7 +89,7 @@ export function ProviderForm() {
     return normalizeModels(payload);
   }
 
-  async function fetchModelsFromServer(): Promise<Response> {
+  async function fetchModelsFromServer(signal: AbortSignal): Promise<Response> {
     return fetch("/api/models", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...accessTokenHeader() },
@@ -97,16 +98,21 @@ export function ProviderForm() {
         baseUrl: settings.baseUrl,
         apiKey: settings.apiKey,
       }),
+      signal,
     });
   }
 
-  async function fetchModelsFromClient(modelsUrl: string): Promise<Response> {
+  async function fetchModelsFromClient(
+    modelsUrl: string,
+    signal: AbortSignal,
+  ): Promise<Response> {
     return fetch(modelsUrl, {
       method: "GET",
       headers: {
         Accept: "application/json",
         ...createLLMHeaders(settings.provider, settings.apiKey),
       },
+      signal,
     });
   }
 
@@ -115,11 +121,9 @@ export function ProviderForm() {
       toast.error("Please set Base URL first");
       return;
     }
-    if (keysLocked) {
-      toast.error("API keys are locked — unlock them in the Security tab first");
-      return;
-    }
-
+    fetchControllerRef.current?.abort();
+    const controller = new AbortController();
+    fetchControllerRef.current = controller;
     setModelsLoading(true);
     setModelsError("");
 
@@ -130,19 +134,21 @@ export function ProviderForm() {
       let response: Response;
 
       if (requestMode === "server" || (requestMode === "auto" && failedModelOrigins.has(origin))) {
-        response = await fetchModelsFromServer();
+        response = await fetchModelsFromServer(controller.signal);
       } else if (requestMode === "client") {
-        response = await fetchModelsFromClient(modelsUrl);
+        response = await fetchModelsFromClient(modelsUrl, controller.signal);
       } else {
         try {
-          response = await fetchModelsFromClient(modelsUrl);
-        } catch {
+          response = await fetchModelsFromClient(modelsUrl, controller.signal);
+        } catch (error) {
+          if (controller.signal.aborted) throw error;
           failedModelOrigins.add(origin);
-          response = await fetchModelsFromServer();
+          response = await fetchModelsFromServer(controller.signal);
         }
       }
 
       const nextModels = (await readModelsResponse(response)).filter((model) => model.id);
+      if (controller.signal.aborted) return;
       setModels(nextModels);
 
       if (nextModels.length === 0) {
@@ -152,21 +158,43 @@ export function ProviderForm() {
       }
 
       if (!settings.model) {
-        updateSettings({ model: nextModels[0].id });
+        onChange({ model: nextModels[0].id });
       }
 
       toast.success(`Fetched ${nextModels.length} model(s)`);
     } catch (error) {
+      if (controller.signal.aborted) return;
       const message = error instanceof Error ? error.message : "Failed to fetch models";
       setModelsError(message);
       toast.error(message);
     } finally {
-      setModelsLoading(false);
+      if (fetchControllerRef.current === controller) {
+        fetchControllerRef.current = null;
+        setModelsLoading(false);
+      }
     }
   }
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="space-y-2">
+        <Label htmlFor="provider">Provider protocol</Label>
+        <select
+          id="provider"
+          className="border-input bg-background text-sm rounded-md border px-3 py-2 w-full"
+          value={settings.provider}
+          onChange={(event) =>
+            onChange({ provider: event.target.value as Settings["provider"] })
+          }
+        >
+          <option value="openai">OpenAI Compatible</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+        <p className="text-xs text-muted-foreground">
+          Controls the request protocol, including for custom gateways.
+        </p>
+      </div>
+
       <div className="space-y-2">
         <Label htmlFor="baseUrl">
           Base URL <span className="text-destructive">*</span>
@@ -175,7 +203,7 @@ export function ProviderForm() {
           id="baseUrl"
           placeholder="https://api.openai.com"
           value={settings.baseUrl}
-          onChange={(e) => updateSettings({ baseUrl: e.target.value })}
+          onChange={(e) => onChange({ baseUrl: e.target.value })}
         />
         <p className="text-xs text-muted-foreground break-all">
           {requestUrl ? (
@@ -195,7 +223,7 @@ export function ProviderForm() {
             id="model"
             placeholder="gpt-4o / claude-sonnet-4-20250514"
             value={settings.model}
-            onChange={(e) => updateSettings({ model: e.target.value })}
+            onChange={(e) => onChange({ model: e.target.value })}
           />
           <Button
             type="button"
@@ -212,7 +240,7 @@ export function ProviderForm() {
           <select
             className="border-input bg-background text-sm rounded-md border px-3 py-2 w-full"
             value={models.some((model) => model.id === settings.model) ? settings.model : ""}
-            onChange={(e) => updateSettings({ model: e.target.value })}
+            onChange={(e) => onChange({ model: e.target.value })}
           >
             {!models.some((model) => model.id === settings.model) && (
               <option value="">Select fetched model...</option>
@@ -224,24 +252,17 @@ export function ProviderForm() {
             ))}
           </select>
         )}
-        <p className="text-xs text-muted-foreground">
-          Provider auto-detected: {settings.provider === "anthropic" ? "Anthropic" : "OpenAI Compatible"}
-        </p>
         {modelsError && <p className="text-xs text-destructive">{modelsError}</p>}
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="apiKey">API Key</Label>
-        {keysLocked ? (
-          <LockedKeyInput id="apiKey" />
-        ) : (
-          <PasswordInput
-            id="apiKey"
-            placeholder="sk-..."
-            value={settings.apiKey}
-            onChange={(e) => updateSettings({ apiKey: e.target.value })}
-          />
-        )}
+        <PasswordInput
+          id="apiKey"
+          placeholder="sk-..."
+          value={settings.apiKey}
+          onChange={(e) => onChange({ apiKey: e.target.value })}
+        />
       </div>
 
       <div className="space-y-2">
@@ -250,7 +271,9 @@ export function ProviderForm() {
           id="requestMode"
           className="border-input bg-background text-sm rounded-md border px-3 py-2"
           value={settings.requestMode}
-          onChange={(e) => updateSettings({ requestMode: e.target.value as any })}
+          onChange={(e) =>
+            onChange({ requestMode: e.target.value as Settings["requestMode"] })
+          }
         >
           <option value="auto">Auto (client first, fallback server)</option>
           <option value="client">Client only (browser direct)</option>
@@ -275,11 +298,11 @@ export function ProviderForm() {
             onChange={(e) => {
               const v = e.target.value;
               if (v === "") {
-                updateSettings({ temperature: undefined });
+                onChange({ temperature: undefined });
                 return;
               }
               const n = Number(v);
-              if (!Number.isNaN(n)) updateSettings({ temperature: n });
+              if (!Number.isNaN(n)) onChange({ temperature: n });
             }}
           />
           <p className="text-xs text-muted-foreground">Empty = provider default</p>
@@ -296,11 +319,11 @@ export function ProviderForm() {
             onChange={(e) => {
               const v = e.target.value;
               if (v === "") {
-                updateSettings({ maxTokens: undefined });
+                onChange({ maxTokens: undefined });
                 return;
               }
               const n = parseInt(v, 10);
-              if (!Number.isNaN(n) && n > 0) updateSettings({ maxTokens: n });
+              if (!Number.isNaN(n) && n > 0) onChange({ maxTokens: n });
             }}
           />
           <p className="text-xs text-muted-foreground">
@@ -315,7 +338,7 @@ export function ProviderForm() {
           id="systemPrompt"
           placeholder="Custom system prompt..."
           value={settings.systemPrompt}
-          onChange={(e) => updateSettings({ systemPrompt: e.target.value })}
+          onChange={(e) => onChange({ systemPrompt: e.target.value })}
           className="min-h-24"
         />
       </div>
@@ -324,12 +347,26 @@ export function ProviderForm() {
   );
 }
 
-export function ToolsForm() {
-  const { settings, updateSettings, keysLocked } = useSettings();
+export function ToolsForm({ value: settings, onChange }: SettingsFormProps) {
   const searchProviderConfig = SEARCH_PROVIDER_CONFIGS[settings.searchProvider] ?? null;
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-1">
+          <Label htmlFor="searchEnabledByDefault">Web search by default</Label>
+          <p className="text-xs text-muted-foreground">
+            New chats inherit this value and can override it per thread.
+          </p>
+        </div>
+        <Switch
+          id="searchEnabledByDefault"
+          checked={settings.searchEnabledByDefault}
+          onCheckedChange={(checked) =>
+            onChange({ searchEnabledByDefault: checked })
+          }
+        />
+      </div>
       <div className="space-y-2">
         <Label htmlFor="searchProvider">Search Engine</Label>
         <select
@@ -337,7 +374,7 @@ export function ToolsForm() {
           className="border-input bg-background text-sm rounded-md border px-3 py-2 w-full"
           value={settings.searchProvider}
           onChange={(e) =>
-            updateSettings({ searchProvider: e.target.value as SearchProviderId })
+            onChange({ searchProvider: e.target.value as SearchProviderId })
           }
         >
           {!searchProviderConfig && (
@@ -359,18 +396,16 @@ export function ToolsForm() {
             <Label htmlFor={searchProviderConfig.apiKeyField}>
               {searchProviderConfig.label} API Key
             </Label>
-            {keysLocked ? (
-              <LockedKeyInput id={searchProviderConfig.apiKeyField} />
-            ) : (
-              <PasswordInput
-                id={searchProviderConfig.apiKeyField}
-                placeholder={searchProviderConfig.apiKeyPlaceholder}
-                value={(settings[searchProviderConfig.apiKeyField] as string) ?? ""}
-                onChange={(e) =>
-                  updateSettings({ [searchProviderConfig.apiKeyField]: e.target.value } as Partial<Settings>)
-                }
-              />
-            )}
+            <PasswordInput
+              id={searchProviderConfig.apiKeyField}
+              placeholder={searchProviderConfig.apiKeyPlaceholder}
+              value={(settings[searchProviderConfig.apiKeyField] as string) ?? ""}
+              onChange={(e) =>
+                onChange({
+                  [searchProviderConfig.apiKeyField]: e.target.value,
+                } as Partial<Settings>)
+              }
+            />
             <p className="text-xs text-muted-foreground">
               Enables web search tool for the AI assistant
             </p>
@@ -385,7 +420,9 @@ export function ToolsForm() {
               placeholder={searchProviderConfig.defaultBaseUrl}
               value={(settings[searchProviderConfig.baseUrlField] as string) ?? ""}
               onChange={(e) =>
-                updateSettings({ [searchProviderConfig.baseUrlField]: e.target.value } as Partial<Settings>)
+                onChange({
+                  [searchProviderConfig.baseUrlField]: e.target.value,
+                } as Partial<Settings>)
               }
             />
           </div>

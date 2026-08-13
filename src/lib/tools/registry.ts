@@ -1,6 +1,6 @@
 import type { ToolDefinition, ToolCall } from "../llm/types";
 import type { SearchProviderId } from "./net-search/types";
-import type { Settings } from "@/providers/SettingsProvider";
+import type { Settings } from "../settings-types";
 import { createNetSearchSpec, hasSearchApiKey } from "./net-search";
 
 /**
@@ -24,19 +24,29 @@ export interface ToolContext {
   exaBaseUrl: string;
   tavilyApiKey: string;
   tavilyBaseUrl: string;
+  signal?: AbortSignal;
 }
 
 // Projects the search-related fields of Settings into a ToolContext. Single
 // source of the mapping used by the chat loop and the search-toggle UI.
-export function settingsToToolContext(settings: Settings): ToolContext {
+export function settingsToToolContext(
+  settings: Settings,
+  searchEnabled = settings.searchEnabledByDefault,
+  signal?: AbortSignal,
+): ToolContext {
   return {
-    searchEnabled: settings.searchEnabled,
+    searchEnabled,
     searchProvider: settings.searchProvider,
     exaApiKey: settings.exaApiKey,
     exaBaseUrl: settings.exaBaseUrl,
     tavilyApiKey: settings.tavilyApiKey,
     tavilyBaseUrl: settings.tavilyBaseUrl,
+    signal,
   };
+}
+
+export function isSearchToolEnabled(context: ToolContext): boolean {
+  return context.searchEnabled && hasSearchApiKey(context);
 }
 
 export function createToolRegistry(context: ToolContext): ToolRegistry {
@@ -44,7 +54,7 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   const specs = [] as { definition: ToolDefinition; execute: (toolCall: ToolCall, ctx: ToolContext) => Promise<string> }[];
   const definitions: ToolDefinition[] = [];
 
-  if (context.searchEnabled && hasSearchApiKey(context)) {
+  if (isSearchToolEnabled(context)) {
     const netSearchSpec = createNetSearchSpec(context);
     specs.push(netSearchSpec);
     definitions.push(netSearchSpec.definition);
@@ -61,6 +71,7 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
     try {
       return await spec.execute(toolCall, ctx);
     } catch (err) {
+      if (ctx.signal?.aborted) throw err;
       return JSON.stringify({
         error: err instanceof Error ? err.message : String(err),
       });

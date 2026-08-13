@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useThreads } from "@/providers/ThreadProvider";
+import { useChat } from "@/providers/ChatProvider";
 import type { Thread } from "@/lib/db";
 import {
   Sheet,
@@ -13,7 +14,6 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  PanelRightOpen,
   PanelRightClose,
   Pencil,
   Plus,
@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 function ThreadList({
   threads,
@@ -135,14 +136,30 @@ export default function ThreadHistory({
     currentThreadId,
     isLoading,
     switchThread,
-    createNewThread,
-    removeThread,
+    openNewChat,
     updateThreadTitle,
   } = useThreads();
+  const { deleteThread } = useChat();
 
   const handleThreadClick = (id: string) => {
     switchThread(id);
     if (!isLargeScreen) onToggle();
+  };
+
+  const handleDeleteThread = (id: string) => {
+    void deleteThread(id).catch((error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to delete thread",
+      ),
+    );
+  };
+
+  const handleRenameThread = (id: string, title: string) => {
+    void updateThreadTitle(id, title).catch((error) =>
+      toast.error(
+        error instanceof Error ? error.message : "Failed to rename thread",
+      ),
+    );
   };
 
   return (
@@ -162,7 +179,7 @@ export default function ThreadHistory({
             <Button
               className="hover:bg-muted"
               variant="ghost"
-              onClick={() => createNewThread()}
+              onClick={openNewChat}
             >
               <Plus className="size-5" />
             </Button>
@@ -174,8 +191,8 @@ export default function ThreadHistory({
               threads={threads}
               currentThreadId={currentThreadId}
               onThreadClick={handleThreadClick}
-              onDeleteThread={removeThread}
-              onRenameThread={updateThreadTitle}
+              onDeleteThread={handleDeleteThread}
+              onRenameThread={handleRenameThread}
             />
           )}
         </div>
@@ -196,7 +213,7 @@ export default function ThreadHistory({
             <Button
               variant="outline"
               className="mx-4 mb-2"
-              onClick={() => createNewThread()}
+              onClick={openNewChat}
             >
               <Plus className="size-4 mr-2" /> New Chat
             </Button>
@@ -204,8 +221,8 @@ export default function ThreadHistory({
               threads={threads}
               currentThreadId={currentThreadId}
               onThreadClick={handleThreadClick}
-              onDeleteThread={removeThread}
-              onRenameThread={updateThreadTitle}
+              onDeleteThread={handleDeleteThread}
+              onRenameThread={handleRenameThread}
             />
           </SheetContent>
         </Sheet>

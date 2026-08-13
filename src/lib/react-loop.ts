@@ -112,10 +112,13 @@ export async function runReactLoop(
       try {
         result = await toolRegistry.execute(tc, toolContext);
       } catch (err) {
+        if (signal?.aborted) throw err;
         result = JSON.stringify({
           error: err instanceof Error ? err.message : String(err),
         });
       }
+
+      if (signal?.aborted) throw new Error("Aborted");
 
       const toolMsg: ChatMessage = {
         role: "tool",

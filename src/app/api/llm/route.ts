@@ -12,7 +12,12 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const response = await forwardLLMRequest({ url, headers, body });
+    const response = await forwardLLMRequest({
+      url,
+      headers,
+      body,
+      signal: request.signal,
+    });
 
     if (!response.ok) {
       const errorText = await response.text();

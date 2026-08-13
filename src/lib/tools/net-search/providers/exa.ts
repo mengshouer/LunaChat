@@ -7,7 +7,11 @@ export class ExaSearchProvider implements SearchProvider {
     private baseUrl: string,
   ) {}
 
-  async search(query: string, maxResults: number): Promise<SearchResult[]> {
+  async search(
+    query: string,
+    maxResults: number,
+    signal?: AbortSignal,
+  ): Promise<SearchResult[]> {
     const raw = await callHttpTool({
       url: "/api/exa",
       body: {
@@ -17,6 +21,7 @@ export class ExaSearchProvider implements SearchProvider {
         numResults: Math.min(maxResults, 10),
       },
       requestMode: "client",
+      signal,
     });
 
     const data = JSON.parse(raw);

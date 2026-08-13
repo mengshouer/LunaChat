@@ -28,6 +28,7 @@ interface HttpToolParams {
    * 对于需要后端密钥的外部 API，推荐使用 server；对于本项目自有的 /api/* 路由，通常使用 client。
    */
   requestMode?: "client" | "server" | "auto";
+  signal?: AbortSignal;
 }
 
 /**
@@ -38,11 +39,13 @@ export async function callHttpTool({
   body,
   headers,
   requestMode = "server",
+  signal,
 }: HttpToolParams): Promise<string> {
   const response = await fetchWithMode(url, {
     body,
     headers,
     requestMode,
+    signal,
   });
 
   if (!response.ok) {

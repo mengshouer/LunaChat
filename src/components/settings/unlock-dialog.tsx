@@ -53,16 +53,25 @@ export function UnlockDialog({
     }
   };
 
-  const handleForgot = () => {
+  const handleForgot = async () => {
     if (
       !window.confirm(
         "Forgot passphrase? Your API keys are unrecoverable and will be CLEARED. Encryption will be turned off. Profiles and chat history are kept. Continue?",
       )
     )
       return;
-    resetEncryption();
-    close(false);
-    toast.info("API keys cleared and encryption disabled. Re-enter your keys in Settings.");
+    try {
+      setBusy(true);
+      await resetEncryption();
+      close(false);
+      toast.info(
+        "API keys cleared and encryption disabled. Re-enter your keys in Settings.",
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Reset failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -91,7 +100,8 @@ export function UnlockDialog({
               type="button"
               variant="link"
               className="px-0 text-xs text-muted-foreground"
-              onClick={handleForgot}
+              onClick={() => void handleForgot()}
+              disabled={busy}
             >
               Forgot passphrase?
             </Button>

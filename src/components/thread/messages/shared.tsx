@@ -55,14 +55,12 @@ function ContentCopyable({
 
 export function CommandBar({
   content,
-  isHumanMessage,
   isAiMessage,
   handleRegenerate,
   handleFork,
   isLoading,
 }: {
   content: string;
-  isHumanMessage?: boolean;
   isAiMessage?: boolean;
   handleRegenerate?: () => void;
   handleFork?: () => void;

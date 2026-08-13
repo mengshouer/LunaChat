@@ -1,127 +1,159 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { v4 as uuidv4 } from "uuid";
-import type { ProviderType } from "@/lib/llm/types";
-import type { SearchProviderId } from "@/lib/tools/net-search/types";
+import { db } from "@/lib/db";
+import {
+  APP_CONFIG_ID,
+  API_KEY_FIELDS,
+  DEFAULT_SETTINGS,
+  applyProfileSettings,
+  normalizeProfile,
+  profileToSettings,
+  validateSettings,
+  type AppConfigRecord,
+  type ConfigProfile,
+  type EncryptionMeta,
+  type Settings,
+} from "@/lib/settings-types";
 import {
   deriveKey,
-  encryptString,
   decryptString,
-  isEncrypted,
-  randomSalt,
+  encryptString,
   exportKeyRaw,
   importKeyRaw,
+  isEncrypted,
+  randomSalt,
 } from "@/lib/crypto";
+import {
+  applyImport,
+  combineImportedProfiles,
+  parseImportProfiles,
+  resetAllData,
+  type ExportData,
+  type RestoreResult,
+} from "@/lib/config-io";
+import { SettingsWriteQueue } from "@/lib/settings-write-queue";
 
-export type RequestMode = "client" | "server" | "auto";
-
-export interface Settings {
-  provider: ProviderType;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  searchProvider: SearchProviderId;
-  exaApiKey: string;
-  exaBaseUrl: string;
-  tavilyApiKey: string;
-  tavilyBaseUrl: string;
-  systemPrompt: string;
-  requestMode: RequestMode;
-  searchEnabled: boolean;
-  // Optional sampling params; absent = not sent (provider default).
-  temperature?: number;
-  maxTokens?: number;
-}
-
-export interface ConfigProfile extends Settings {
-  id: string;
-  name: string;
-}
-
-// Passphrase encryption metadata (one passphrase covers all profiles).
-// check = encryptString(derivedKey, CHECK_VALUE); unlock verifies the
-// passphrase by decrypting it. The passphrase itself is never stored.
-interface EncryptionMeta {
-  salt: string;
-  check: string;
-}
-
-interface ConfigsData {
-  profiles: ConfigProfile[];
-  activeProfileId: string | null;
-  encryption?: EncryptionMeta;
-}
+export type {
+  AppConfigRecord,
+  ConfigProfile,
+  EncryptionMeta,
+  RequestMode,
+  Settings,
+} from "@/lib/settings-types";
 
 interface SettingsContextValue {
   settings: Settings;
-  updateSettings: (updates: Partial<Settings>) => void;
   isConfigured: boolean;
-  // Multi-profile APIs
   profiles: ConfigProfile[];
   activeProfileId: string | null;
-  switchProfile: (id: string) => void;
-  createProfile: (name?: string) => string;
-  deleteProfile: (id: string) => void;
-  renameProfile: (id: string, name: string) => void;
-  duplicateProfile: (id: string) => string;
+  switchProfile: (id: string) => Promise<void>;
+  createProfile: (name?: string) => Promise<string>;
+  deleteProfile: (id: string) => Promise<void>;
+  renameProfile: (id: string, name: string) => Promise<void>;
+  duplicateProfile: (id: string) => Promise<string>;
+  saveProfile: (id: string, settings: Settings) => Promise<void>;
   getProfileById: (id: string) => ConfigProfile | undefined;
-  reloadConfigs: () => void;
-  // API key encryption
+  restoreImportedData: (data: ExportData) => Promise<RestoreResult>;
   encryptionEnabled: boolean;
   keysLocked: boolean;
   unlock: (passphrase: string) => Promise<boolean>;
   enableEncryption: (passphrase: string) => Promise<void>;
   disableEncryption: () => Promise<void>;
   changePassphrase: (passphrase: string) => Promise<void>;
-  resetEncryption: () => void;
-  // Encrypt a key value the way persist() would (identity when encryption is
-  // off). Used by the import path, which writes localStorage directly.
-  // Throws while locked.
-  encryptForStorage: (value: string) => Promise<string>;
+  resetEncryption: () => Promise<void>;
+  resetApplicationData: () => Promise<void>;
 }
 
-const DEFAULT_SETTINGS: Settings = {
-  provider: "openai",
-  baseUrl: "",
-  apiKey: "",
-  model: "",
-  searchProvider: "tavily",
-  exaApiKey: "",
-  exaBaseUrl: "https://api.exa.ai",
-  tavilyApiKey: "",
-  tavilyBaseUrl: "https://api.tavily.com",
-  systemPrompt: "",
-  requestMode: "auto",
-  searchEnabled: false,
-};
-
-const OLD_STORAGE_KEY = "chat-app-settings";
-const CONFIGS_STORAGE_KEY = "chat-app-configs";
 const SESSION_KEY_STORAGE = "chat-app-session-key";
 const CHECK_VALUE = "chat-app-check";
 
-export const API_KEY_FIELDS = ["apiKey", "exaApiKey", "tavilyApiKey"] as const;
-type ApiKeyField = (typeof API_KEY_FIELDS)[number];
-
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
-function detectProvider(settings: Pick<Settings, "model" | "baseUrl">): ProviderType {
-  const model = settings.model.toLowerCase();
-  const baseUrl = settings.baseUrl.toLowerCase();
-  if (model.includes("claude") || baseUrl.includes("anthropic")) {
-    return "anthropic";
+function clearStoredSessionKey(): void {
+  try {
+    sessionStorage.removeItem(SESSION_KEY_STORAGE);
+  } catch {
+    // The in-memory key remains authoritative for the current page lifetime.
   }
-  return "openai";
 }
 
-function createDefaultProfile(overrides?: Partial<Settings>): ConfigProfile {
-  const merged = { ...DEFAULT_SETTINGS, ...overrides };
+function createDefaultProfile(): ConfigProfile {
   return {
     id: uuidv4(),
-    name: merged.model || "Default",
-    ...merged,
+    name: DEFAULT_SETTINGS.model || "Default",
+    ...DEFAULT_SETTINGS,
   };
+}
+
+function normalizeConfigRecord(value: unknown): AppConfigRecord {
+  const source =
+    value && typeof value === "object"
+      ? (value as Partial<AppConfigRecord> & {
+          profiles?: unknown;
+          activeProfileId?: unknown;
+          encryption?: unknown;
+        })
+      : {};
+  const rawProfiles = Array.isArray(source.profiles) ? source.profiles : [];
+  const profiles = rawProfiles
+    .filter(
+      (profile): profile is ConfigProfile & Record<string, unknown> =>
+        !!profile &&
+        typeof profile === "object" &&
+        typeof (profile as { id?: unknown }).id === "string",
+    )
+    .map((profile) => normalizeProfile(profile));
+  if (profiles.length === 0) profiles.push(createDefaultProfile());
+  const requestedActiveId =
+    typeof source.activeProfileId === "string" ? source.activeProfileId : null;
+  const activeProfileId = profiles.some((p) => p.id === requestedActiveId)
+    ? requestedActiveId
+    : profiles[0].id;
+  const encryption =
+    source.encryption &&
+    typeof source.encryption === "object" &&
+    typeof (source.encryption as EncryptionMeta).salt === "string" &&
+    typeof (source.encryption as EncryptionMeta).check === "string"
+      ? (source.encryption as EncryptionMeta)
+      : undefined;
+  return {
+    id: APP_CONFIG_ID,
+    profiles,
+    activeProfileId,
+    ...(encryption ? { encryption } : {}),
+  };
+}
+
+async function loadConfig(): Promise<AppConfigRecord> {
+  return db.transaction("rw", db.appConfig, async () => {
+    const existing = await db.appConfig.get(APP_CONFIG_ID);
+    const normalized = normalizeConfigRecord(existing);
+    await db.appConfig.put(normalized);
+    return normalized;
+  });
+}
+
+// Blanks any API key still held as ciphertext (i.e. while locked). Returns the
+// profile unchanged when there is nothing to blank, so callers that memoize on
+// identity are not invalidated on every render.
+function sanitizeProfileKeys(profile: ConfigProfile): ConfigProfile {
+  const encryptedFields = API_KEY_FIELDS.filter((field) =>
+    isEncrypted(profile[field]),
+  );
+  if (encryptedFields.length === 0) return profile;
+  const sanitized = { ...profile };
+  for (const field of encryptedFields) sanitized[field] = "";
+  return sanitized;
 }
 
 async function encryptProfileKeys(
@@ -131,9 +163,7 @@ async function encryptProfileKeys(
   const next = { ...profile };
   for (const field of API_KEY_FIELDS) {
     const value = next[field];
-    if (value && !isEncrypted(value)) {
-      next[field] = await encryptString(key, value);
-    }
+    if (value && !isEncrypted(value)) next[field] = await encryptString(key, value);
   }
   return next;
 }
@@ -145,83 +175,38 @@ async function decryptProfileKeys(
   const next = { ...profile };
   for (const field of API_KEY_FIELDS) {
     const value = next[field];
-    if (value && isEncrypted(value)) {
-      next[field] = await decryptString(key, value);
-    }
+    if (value && isEncrypted(value)) next[field] = await decryptString(key, value);
   }
   return next;
 }
 
-function loadConfigs(): ConfigsData {
-  if (typeof window === "undefined") {
-    const profile = createDefaultProfile();
-    return { profiles: [profile], activeProfileId: profile.id };
-  }
-
-  try {
-    // Try new key first
-    const stored = localStorage.getItem(CONFIGS_STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored) as ConfigsData;
-      if (parsed.profiles && parsed.profiles.length > 0) {
-        parsed.profiles = parsed.profiles.map((p) => ({
-          ...DEFAULT_SETTINGS,
-          ...p,
-        }));
-        // Normalize a null/dangling activeProfileId so the steady state is
-        // always resolvable (updateSettings refuses to write otherwise).
-        if (
-          !parsed.activeProfileId ||
-          !parsed.profiles.some((p) => p.id === parsed.activeProfileId)
-        ) {
-          parsed.activeProfileId = parsed.profiles[0].id;
-        }
-        return parsed;
-      }
+async function toStoredConfig(
+  profiles: ConfigProfile[],
+  activeProfileId: string | null,
+  encryption: EncryptionMeta | null,
+  key: CryptoKey | null,
+): Promise<AppConfigRecord> {
+  let storedProfiles = profiles;
+  if (encryption) {
+    if (!key) {
+      const hasPlaintextKey = profiles.some((profile) =>
+        API_KEY_FIELDS.some(
+          (field) => profile[field] && !isEncrypted(profile[field]),
+        ),
+      );
+      if (hasPlaintextKey) throw new Error("Unlock API keys first");
+    } else {
+      storedProfiles = await Promise.all(
+        profiles.map((profile) => encryptProfileKeys(profile, key)),
+      );
     }
-
-    // Migrate from old key
-    const oldStored = localStorage.getItem(OLD_STORAGE_KEY);
-    if (oldStored) {
-      const oldSettings = JSON.parse(oldStored) as Partial<Settings>;
-      const merged: Settings = {
-        ...DEFAULT_SETTINGS,
-        ...oldSettings,
-        requestMode: oldSettings.requestMode ?? "auto",
-      };
-      const profile: ConfigProfile = {
-        id: uuidv4(),
-        name: merged.model || "Default",
-        ...merged,
-      };
-      const data: ConfigsData = { profiles: [profile], activeProfileId: profile.id };
-      localStorage.setItem(CONFIGS_STORAGE_KEY, JSON.stringify(data));
-      localStorage.removeItem(OLD_STORAGE_KEY);
-      return data;
-    }
-  } catch {
-    // pass
   }
-
-  // No data at all — create a blank profile
-  const profile = createDefaultProfile();
-  return { profiles: [profile], activeProfileId: profile.id };
-}
-
-function saveConfigs(data: ConfigsData) {
-  try {
-    localStorage.setItem(CONFIGS_STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // pass
-  }
-}
-
-function resolveActiveProfile(profiles: ConfigProfile[], activeProfileId: string | null): ConfigProfile {
-  if (activeProfileId) {
-    const found = profiles.find((p) => p.id === activeProfileId);
-    if (found) return found;
-  }
-  return profiles[0];
+  return {
+    id: APP_CONFIG_ID,
+    profiles: storedProfiles,
+    activeProfileId,
+    ...(encryption ? { encryption } : {}),
+  };
 }
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
@@ -231,342 +216,354 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
   const [mounted, setMounted] = useState(false);
 
-  // persist() runs inside sync state updaters; refs keep it seeing the
-  // current encryption state without threading it through every caller.
-  const encryptionRef = useRef<EncryptionMeta | null>(null);
-  const cryptoKeyRef = useRef<CryptoKey | null>(null);
-  // Serializes localStorage writes so an async encrypted write can't be
-  // overtaken by a later (possibly synchronous) write and clobbered.
-  const persistQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const profilesRef = useRef(profiles);
+  const activeProfileIdRef = useRef(activeProfileId);
+  const encryptionRef = useRef(encryption);
+  const cryptoKeyRef = useRef(cryptoKey);
+  const writeQueueRef = useRef(new SettingsWriteQueue());
+  profilesRef.current = profiles;
+  activeProfileIdRef.current = activeProfileId;
   encryptionRef.current = encryption;
   cryptoKeyRef.current = cryptoKey;
 
-  const applyLoaded = useCallback(async (data: ConfigsData) => {
-    let key: CryptoKey | null = null;
-    let loadedProfiles = data.profiles;
-    if (data.encryption) {
-      // Restore the session key (survives F5, cleared when the tab closes)
-      try {
-        const raw = sessionStorage.getItem(SESSION_KEY_STORAGE);
-        if (raw) {
-          const candidate = await importKeyRaw(raw);
-          if ((await decryptString(candidate, data.encryption.check)) === CHECK_VALUE) {
-            key = candidate;
-          }
-        }
-      } catch {
-        sessionStorage.removeItem(SESSION_KEY_STORAGE);
-      }
-      if (key) {
-        const k = key;
-        loadedProfiles = await Promise.all(
-          loadedProfiles.map((p) => decryptProfileKeys(p, k)),
-        );
-      }
-    }
-    setEncryption(data.encryption ?? null);
-    setCryptoKey(key);
-    setProfiles(loadedProfiles);
-    setActiveProfileId(data.activeProfileId);
+  const enqueue = useCallback(<T,>(work: () => Promise<T>): Promise<T> => {
+    return writeQueueRef.current.enqueue(work);
   }, []);
-
-  useEffect(() => {
-    applyLoaded(loadConfigs())
-      .catch(console.error)
-      .finally(() => setMounted(true));
-  }, [applyLoaded]);
-
-  // Derived active profile & settings
-  const activeProfile = profiles.length > 0 ? resolveActiveProfile(profiles, activeProfileId) : null;
-  const settings: Settings = activeProfile
-    ? (() => {
-        const { id: _, name: __, ...profileSettings } = activeProfile;
-        const merged = { ...DEFAULT_SETTINGS, ...profileSettings };
-        // Locked: key fields hold ciphertext — expose them as empty so
-        // consumers (hasSearchApiKey, request builders) degrade naturally.
-        for (const field of API_KEY_FIELDS) {
-          if (isEncrypted(merged[field])) merged[field] = "";
-        }
-        return merged;
-      })()
-    : DEFAULT_SETTINGS;
-
-  const isConfigured = Boolean(settings.baseUrl && settings.model);
-  const encryptionEnabled = encryption !== null;
-  const keysLocked = encryptionEnabled && cryptoKey === null;
-
-  const persist = useCallback((nextProfiles: ConfigProfile[], nextActiveId: string | null) => {
-    const meta = encryptionRef.current;
-    const key = cryptoKeyRef.current;
-    const write = (storedProfiles: ConfigProfile[]) =>
-      saveConfigs({
-        profiles: storedProfiles,
-        activeProfileId: nextActiveId,
-        ...(meta ? { encryption: meta } : {}),
-      });
-    // Both the encrypted (async) and plaintext paths go through one queue so
-    // writes land in call order regardless of per-write async duration.
-    persistQueueRef.current = persistQueueRef.current
-      .then(async () => {
-        if (meta && key) {
-          // In-memory profiles are plaintext while unlocked; encrypt key
-          // fields on the way to localStorage. Locked profiles already hold
-          // ciphertext (key-field updates are ignored while locked), passing
-          // through as-is.
-          write(await Promise.all(nextProfiles.map((p) => encryptProfileKeys(p, key))));
-        } else {
-          write(nextProfiles);
-        }
-      })
-      .catch(console.error);
-  }, []);
-
-  const updateSettings = useCallback(
-    (updates: Partial<Settings>) => {
-      if (encryptionRef.current && cryptoKeyRef.current === null) {
-        // Locked: silently drop key-field edits (UI disables them too)
-        updates = { ...updates };
-        for (const field of API_KEY_FIELDS) delete updates[field];
-      }
-      setProfiles((prev) => {
-        // Write path must target the resolved active profile only. If
-        // activeProfileId no longer resolves (e.g. cross-tab edit), no-op
-        // rather than silently writing into profiles[0].
-        const currentActive = activeProfileId
-          ? prev.find((p) => p.id === activeProfileId)
-          : undefined;
-        if (!currentActive) return prev;
-        const next = prev.map((p) => {
-          if (p.id !== currentActive.id) return p;
-          const updated = { ...p, ...updates };
-          // Auto-detect provider
-          if (
-            updates.provider === undefined &&
-            (updates.model !== undefined || updates.baseUrl !== undefined)
-          ) {
-            updated.provider = detectProvider(updated);
-          }
-          if (!updated.requestMode) {
-            updated.requestMode = "auto";
-          }
-          return updated;
-        });
-        persist(next, activeProfileId);
-        return next;
-      });
-    },
-    [activeProfileId, persist],
-  );
-
-  const switchProfile = useCallback(
-    (id: string) => {
-      setActiveProfileId(id);
-      setProfiles((prev) => {
-        persist(prev, id);
-        return prev;
-      });
-    },
-    [persist],
-  );
-
-  const createProfile = useCallback(
-    (name?: string) => {
-      const profile = createDefaultProfile();
-      if (name) profile.name = name;
-      setProfiles((prev) => {
-        const next = [...prev, profile];
-        persist(next, profile.id);
-        return next;
-      });
-      setActiveProfileId(profile.id);
-      return profile.id;
-    },
-    [persist],
-  );
-
-  const deleteProfile = useCallback(
-    (id: string) => {
-      setProfiles((prev) => {
-        if (prev.length <= 1) return prev; // keep at least one
-        const next = prev.filter((p) => p.id !== id);
-        const newActiveId = activeProfileId === id ? next[0].id : activeProfileId;
-        if (activeProfileId === id) {
-          setActiveProfileId(newActiveId);
-        }
-        persist(next, newActiveId);
-        return next;
-      });
-    },
-    [activeProfileId, persist],
-  );
-
-  const renameProfile = useCallback(
-    (id: string, name: string) => {
-      setProfiles((prev) => {
-        const next = prev.map((p) => (p.id === id ? { ...p, name } : p));
-        persist(next, activeProfileId);
-        return next;
-      });
-    },
-    [activeProfileId, persist],
-  );
-
-  const duplicateProfile = useCallback(
-    (id: string) => {
-      const source = profiles.find((p) => p.id === id);
-      if (!source) return createProfile();
-      const newProfile: ConfigProfile = {
-        ...source,
-        id: uuidv4(),
-        name: `${source.name} (copy)`,
-      };
-      setProfiles((prev) => {
-        const next = [...prev, newProfile];
-        persist(next, newProfile.id);
-        return next;
-      });
-      setActiveProfileId(newProfile.id);
-      return newProfile.id;
-    },
-    [profiles, persist, createProfile],
-  );
-
-  const getProfileById = useCallback(
-    (id: string) => profiles.find((p) => p.id === id),
-    [profiles],
-  );
-
-  const reloadConfigs = useCallback(() => {
-    applyLoaded(loadConfigs()).catch(console.error);
-  }, [applyLoaded]);
 
   const storeSessionKey = useCallback(async (key: CryptoKey) => {
     try {
       sessionStorage.setItem(SESSION_KEY_STORAGE, await exportKeyRaw(key));
     } catch {
-      // pass — worst case the user re-enters the passphrase after refresh
+      // The in-memory key remains valid; refresh will require the passphrase.
     }
   }, []);
 
-  const unlock = useCallback(
-    async (passphrase: string): Promise<boolean> => {
-      const meta = encryptionRef.current;
-      if (!meta) return true;
-      let key: CryptoKey;
+  const applyLoaded = useCallback(async (record: AppConfigRecord) => {
+    let key: CryptoKey | null = null;
+    let loadedProfiles = record.profiles;
+    if (record.encryption) {
       try {
-        key = await deriveKey(passphrase, meta.salt);
-        if ((await decryptString(key, meta.check)) !== CHECK_VALUE) return false;
+        const raw = sessionStorage.getItem(SESSION_KEY_STORAGE);
+        if (raw) {
+          const candidate = await importKeyRaw(raw);
+          if ((await decryptString(candidate, record.encryption.check)) === CHECK_VALUE) {
+            key = candidate;
+            loadedProfiles = await Promise.all(
+              record.profiles.map((profile) =>
+                decryptProfileKeys(profile, candidate),
+              ),
+            );
+          }
+        }
       } catch {
-        return false;
+        key = null;
+        loadedProfiles = record.profiles;
+        clearStoredSessionKey();
       }
-      const decrypted = await Promise.all(
-        profiles.map((p) => decryptProfileKeys(p, key)),
+    }
+    profilesRef.current = loadedProfiles;
+    activeProfileIdRef.current = record.activeProfileId;
+    encryptionRef.current = record.encryption ?? null;
+    cryptoKeyRef.current = key;
+    setProfiles(loadedProfiles);
+    setActiveProfileId(record.activeProfileId);
+    setEncryption(record.encryption ?? null);
+    setCryptoKey(key);
+  }, []);
+
+  useEffect(() => {
+    loadConfig()
+      .then(applyLoaded)
+      .catch(console.error)
+      .finally(() => setMounted(true));
+  }, [applyLoaded]);
+
+  const commit = useCallback(
+    async (
+      nextProfiles: ConfigProfile[],
+      nextActiveProfileId: string | null,
+      nextEncryption = encryptionRef.current,
+      nextKey = cryptoKeyRef.current,
+    ) => {
+      const record = await toStoredConfig(
+        nextProfiles,
+        nextActiveProfileId,
+        nextEncryption,
+        nextKey,
       );
-      setProfiles(decrypted);
-      setCryptoKey(key);
-      cryptoKeyRef.current = key;
-      await storeSessionKey(key);
-      return true;
+      await db.appConfig.put(record);
+      profilesRef.current = nextProfiles;
+      activeProfileIdRef.current = nextActiveProfileId;
+      encryptionRef.current = nextEncryption;
+      cryptoKeyRef.current = nextKey;
+      setProfiles(nextProfiles);
+      setActiveProfileId(nextActiveProfileId);
+      setEncryption(nextEncryption);
+      setCryptoKey(nextKey);
     },
-    [profiles, storeSessionKey],
+    [],
   );
 
-  // Shared by enableEncryption / changePassphrase: derive a key from a new
-  // salt, write the check value, re-encrypt all profiles on persist.
-  const applyPassphrase = useCallback(
-    async (passphrase: string) => {
-      const salt = randomSalt();
-      const key = await deriveKey(passphrase, salt);
-      const meta: EncryptionMeta = {
-        salt,
-        check: await encryptString(key, CHECK_VALUE),
-      };
-      setEncryption(meta);
-      setCryptoKey(key);
-      encryptionRef.current = meta;
-      cryptoKeyRef.current = key;
-      await storeSessionKey(key);
-      persist(profiles, activeProfileId);
-    },
-    [profiles, activeProfileId, persist, storeSessionKey],
+  const saveProfile = useCallback(
+    (id: string, nextSettings: Settings) =>
+      enqueue(async () => {
+        validateSettings(nextSettings);
+        if (encryptionRef.current && !cryptoKeyRef.current) {
+          throw new Error("Unlock API keys first");
+        }
+        const current = profilesRef.current;
+        const found = current.find((profile) => profile.id === id);
+        if (!found) throw new Error("Profile no longer exists");
+        const nextProfiles = current.map((profile) =>
+          profile.id === id
+            ? applyProfileSettings(profile, nextSettings)
+            : profile,
+        );
+        await commit(nextProfiles, activeProfileIdRef.current);
+      }),
+    [commit, enqueue],
+  );
+
+  const switchProfile = useCallback(
+    (id: string) =>
+      enqueue(async () => {
+        if (!profilesRef.current.some((profile) => profile.id === id)) return;
+        await commit(profilesRef.current, id);
+      }),
+    [commit, enqueue],
+  );
+
+  const createProfile = useCallback(
+    (name?: string) =>
+      enqueue(async () => {
+        const profile = createDefaultProfile();
+        if (name?.trim()) profile.name = name.trim();
+        await commit(
+          [...profilesRef.current, profile],
+          activeProfileIdRef.current ?? profile.id,
+        );
+        return profile.id;
+      }),
+    [commit, enqueue],
+  );
+
+  const deleteProfile = useCallback(
+    (id: string) =>
+      enqueue(async () => {
+        const current = profilesRef.current;
+        if (current.length <= 1) return;
+        const next = current.filter((profile) => profile.id !== id);
+        if (next.length === current.length) return;
+        const nextActiveId =
+          activeProfileIdRef.current === id
+            ? next[0].id
+            : activeProfileIdRef.current;
+        await commit(next, nextActiveId);
+      }),
+    [commit, enqueue],
+  );
+
+  const renameProfile = useCallback(
+    (id: string, name: string) =>
+      enqueue(async () => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        const next = profilesRef.current.map((profile) =>
+          profile.id === id ? { ...profile, name: trimmed } : profile,
+        );
+        await commit(next, activeProfileIdRef.current);
+      }),
+    [commit, enqueue],
+  );
+
+  const duplicateProfile = useCallback(
+    (id: string) =>
+      enqueue(async () => {
+        const source = profilesRef.current.find((profile) => profile.id === id);
+        if (!source) throw new Error("Profile no longer exists");
+        const copy: ConfigProfile = {
+          ...source,
+          id: uuidv4(),
+          name: `${source.name} (copy)`,
+        };
+        await commit(
+          [...profilesRef.current, copy],
+          activeProfileIdRef.current ?? copy.id,
+        );
+        return copy.id;
+      }),
+    [commit, enqueue],
+  );
+
+  const restoreImportedData = useCallback(
+    (data: ExportData) =>
+      enqueue(async (): Promise<RestoreResult> => {
+        const imported = parseImportProfiles(data);
+        const combined = combineImportedProfiles(
+          data.mode,
+          profilesRef.current,
+          imported,
+          data.configs.activeProfileId,
+          activeProfileIdRef.current,
+        );
+        const record = await toStoredConfig(
+          combined.profiles,
+          combined.activeProfileId,
+          encryptionRef.current,
+          cryptoKeyRef.current,
+        );
+        const result = await applyImport(data, record);
+        profilesRef.current = combined.profiles;
+        activeProfileIdRef.current = combined.activeProfileId;
+        setProfiles(combined.profiles);
+        setActiveProfileId(combined.activeProfileId);
+        return {
+          ...result,
+          profileCount: imported.length,
+          addedProfileCount: combined.addedProfileCount,
+        };
+      }),
+    [enqueue],
+  );
+
+  const unlock = useCallback(
+    (passphrase: string) =>
+      enqueue(async () => {
+        const meta = encryptionRef.current;
+        if (!meta) return true;
+        try {
+          const key = await deriveKey(passphrase, meta.salt);
+          if ((await decryptString(key, meta.check)) !== CHECK_VALUE) return false;
+          const decrypted = await Promise.all(
+            profilesRef.current.map((profile) => decryptProfileKeys(profile, key)),
+          );
+          profilesRef.current = decrypted;
+          cryptoKeyRef.current = key;
+          setProfiles(decrypted);
+          setCryptoKey(key);
+          await storeSessionKey(key);
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    [enqueue, storeSessionKey],
   );
 
   const enableEncryption = useCallback(
-    async (passphrase: string) => {
-      if (encryptionRef.current) throw new Error("Encryption already enabled");
-      await applyPassphrase(passphrase);
-    },
-    [applyPassphrase],
+    (passphrase: string) =>
+      enqueue(async () => {
+        if (encryptionRef.current) throw new Error("Encryption already enabled");
+        const salt = randomSalt();
+        const key = await deriveKey(passphrase, salt);
+        const meta: EncryptionMeta = {
+          salt,
+          check: await encryptString(key, CHECK_VALUE),
+        };
+        await commit(profilesRef.current, activeProfileIdRef.current, meta, key);
+        await storeSessionKey(key);
+      }),
+    [commit, enqueue, storeSessionKey],
   );
 
   const changePassphrase = useCallback(
-    async (passphrase: string) => {
-      if (!encryptionRef.current || !cryptoKeyRef.current) {
-        throw new Error("Unlock first");
-      }
-      await applyPassphrase(passphrase);
-    },
-    [applyPassphrase],
+    (passphrase: string) =>
+      enqueue(async () => {
+        if (!encryptionRef.current || !cryptoKeyRef.current) {
+          throw new Error("Unlock first");
+        }
+        const salt = randomSalt();
+        const key = await deriveKey(passphrase, salt);
+        const meta: EncryptionMeta = {
+          salt,
+          check: await encryptString(key, CHECK_VALUE),
+        };
+        await commit(profilesRef.current, activeProfileIdRef.current, meta, key);
+        await storeSessionKey(key);
+      }),
+    [commit, enqueue, storeSessionKey],
   );
 
-  const disableEncryption = useCallback(async () => {
-    if (!encryptionRef.current) return;
-    if (!cryptoKeyRef.current) throw new Error("Unlock first");
-    setEncryption(null);
-    setCryptoKey(null);
-    encryptionRef.current = null;
-    cryptoKeyRef.current = null;
-    sessionStorage.removeItem(SESSION_KEY_STORAGE);
-    // In-memory profiles are plaintext; persisting now writes them back out
-    persist(profiles, activeProfileId);
-  }, [profiles, activeProfileId, persist]);
+  const disableEncryption = useCallback(
+    () =>
+      enqueue(async () => {
+        if (!encryptionRef.current) return;
+        if (!cryptoKeyRef.current) throw new Error("Unlock first");
+        await commit(profilesRef.current, activeProfileIdRef.current, null, null);
+        clearStoredSessionKey();
+      }),
+    [commit, enqueue],
+  );
 
-  const encryptForStorage = useCallback(async (value: string) => {
-    if (!encryptionRef.current) return value;
-    const key = cryptoKeyRef.current;
-    if (!key) throw new Error("Unlock first");
-    return value && !isEncrypted(value) ? encryptString(key, value) : value;
-  }, []);
+  const resetEncryption = useCallback(
+    () =>
+      enqueue(async () => {
+        const cleared = profilesRef.current.map((profile) => ({
+          ...profile,
+          apiKey: "",
+          exaApiKey: "",
+          tavilyApiKey: "",
+        }));
+        await commit(cleared, activeProfileIdRef.current, null, null);
+        clearStoredSessionKey();
+      }),
+    [commit, enqueue],
+  );
 
-  // Forgot passphrase: keys are unrecoverable by design — clear them and
-  // turn encryption off. Everything else (profiles, chats) stays intact.
-  const resetEncryption = useCallback(() => {
-    setEncryption(null);
-    setCryptoKey(null);
-    encryptionRef.current = null;
-    cryptoKeyRef.current = null;
-    sessionStorage.removeItem(SESSION_KEY_STORAGE);
-    setProfiles((prev) => {
-      const next = prev.map((p) => ({
-        ...p,
-        apiKey: "",
-        exaApiKey: "",
-        tavilyApiKey: "",
-      }));
-      persist(next, activeProfileId);
-      return next;
+  const resetApplicationData = useCallback(
+    () => writeQueueRef.current.enqueueFinal(resetAllData),
+    [],
+  );
+
+  // Everything handed out through the context is key-sanitized. While unlocked
+  // nothing in memory is ciphertext, so this is a no-op and object identity is
+  // preserved (ChatProvider memoizes on these). While locked it is the reason
+  // no consumer can render ciphertext into an input — the guard lives here
+  // rather than at each call site that opens the settings dialog.
+  const visibleProfiles = useMemo(() => {
+    let changed = false;
+    const next = profiles.map((profile) => {
+      const sanitized = sanitizeProfileKeys(profile);
+      if (sanitized !== profile) changed = true;
+      return sanitized;
     });
-  }, [activeProfileId, persist]);
+    return changed ? next : profiles;
+  }, [profiles]);
 
-  if (!mounted) {
-    return null;
-  }
+  const getProfileById = useCallback(
+    (id: string) => {
+      const found = profilesRef.current.find((profile) => profile.id === id);
+      return found ? sanitizeProfileKeys(found) : undefined;
+    },
+    [],
+  );
+
+  if (!mounted) return null;
+
+  const activeProfile = activeProfileId
+    ? visibleProfiles.find((profile) => profile.id === activeProfileId)
+    : undefined;
+  const settings = activeProfile
+    ? profileToSettings(activeProfile)
+    : DEFAULT_SETTINGS;
+  const encryptionEnabled = encryption !== null;
+  const keysLocked = encryptionEnabled && cryptoKey === null;
 
   return (
     <SettingsContext.Provider
       value={{
         settings,
-        updateSettings,
-        isConfigured,
-        profiles,
+        isConfigured: Boolean(settings.baseUrl && settings.model),
+        profiles: visibleProfiles,
         activeProfileId,
         switchProfile,
         createProfile,
         deleteProfile,
         renameProfile,
         duplicateProfile,
+        saveProfile,
         getProfileById,
-        reloadConfigs,
+        restoreImportedData,
         encryptionEnabled,
         keysLocked,
         unlock,
@@ -574,7 +571,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         disableEncryption,
         changePassphrase,
         resetEncryption,
-        encryptForStorage,
+        resetApplicationData,
       }}
     >
       {children}
@@ -583,7 +580,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useSettings() {
-  const ctx = useContext(SettingsContext);
-  if (!ctx) throw new Error("useSettings must be used within SettingsProvider");
-  return ctx;
+  const context = useContext(SettingsContext);
+  if (!context) throw new Error("useSettings must be used within SettingsProvider");
+  return context;
 }

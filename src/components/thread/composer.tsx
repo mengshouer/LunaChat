@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send,
@@ -18,16 +18,22 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
-import { useChat } from "@/providers/ChatProvider";
-import { useSettings } from "@/providers/SettingsProvider";
+import { useChat, MAX_CONCURRENT_TURNS } from "@/providers/ChatProvider";
 import {
   extractClipboardFiles,
   toPendingAttachments,
   type PendingAttachment,
 } from "@/lib/attachments";
-import { hasSearchApiKey } from "@/lib/tools/net-search";
-import { settingsToToolContext } from "@/lib/tools/registry";
+import {
+  getDraftRestoreKey,
+  mergeRestoredInput,
+} from "@/lib/composer-draft";
 import { toast } from "sonner";
+
+interface ComposerDraft {
+  input: string;
+  attachments: PendingAttachment[];
+}
 
 function ScrollToBottom({ onClick }: { onClick: () => void }) {
   return (
@@ -50,35 +56,117 @@ function ScrollToBottom({ onClick }: { onClick: () => void }) {
 }
 
 export function Composer({
+  conversationKey,
+  validConversationIds,
   isAtBottom,
   onScrollToBottom,
   onOpenSettings,
   onRequireUnlock,
 }: {
+  conversationKey: string;
+  validConversationIds: string[];
   isAtBottom: boolean;
   onScrollToBottom: () => void;
   onOpenSettings: () => void;
   onRequireUnlock: () => void;
 }) {
-  const { isStreaming, sendMessage, stopStreaming } = useChat();
-  const { settings, isConfigured, keysLocked, updateSettings } = useSettings();
-  const [input, setInput] = useState("");
-  const [pendingAttachments, setPendingAttachments] = useState<
-    PendingAttachment[]
-  >([]);
+  const {
+    isStreaming,
+    turnStatus,
+    activeTurnCount,
+    sendMessage,
+    stopStreaming,
+    isConfigured,
+    keysLocked,
+    profileMissing,
+    searchEnabled,
+    searchAvailable,
+    toggleSearchEnabled,
+  } = useChat();
+  const [drafts, setDrafts] = useState<Map<string, ComposerDraft>>(
+    () => new Map(),
+  );
+  const draftsRef = useRef(drafts);
+  const submittingRef = useRef<Set<string>>(new Set());
+  const conversationKeyRef = useRef(conversationKey);
+  const validConversationIdsRef = useRef(validConversationIds);
+  draftsRef.current = drafts;
+  conversationKeyRef.current = conversationKey;
+  validConversationIdsRef.current = validConversationIds;
+  const draft = drafts.get(conversationKey) ?? { input: "", attachments: [] };
+  const input = draft.input;
+  const pendingAttachments = draft.attachments;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const updateDraft = useCallback(
+    (key: string, updater: (current: ComposerDraft) => ComposerDraft) => {
+      setDrafts((current) => {
+        const next = new Map(current);
+        const existing = next.get(key) ?? {
+          input: "",
+          attachments: [],
+        };
+        const updated = updater(existing);
+        if (!updated.input && updated.attachments.length === 0) {
+          next.delete(key);
+        } else {
+          next.set(key, updated);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const updateCurrentDraft = useCallback(
+    (updater: (current: ComposerDraft) => ComposerDraft) => {
+      updateDraft(conversationKey, updater);
+    },
+    [conversationKey, updateDraft],
+  );
+
+  useEffect(() => {
+    const valid = new Set(validConversationIds);
+    setDrafts((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const [id, value] of next) {
+        if (valid.has(id)) continue;
+        value.attachments.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+        next.delete(id);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [validConversationIds]);
+
+  useEffect(
+    () => () => {
+      for (const value of draftsRef.current.values()) {
+        value.attachments.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      }
+    },
+    [],
+  );
+
   const addFiles = useCallback((files: FileList | File[]) => {
-    setPendingAttachments((prev) => [...prev, ...toPendingAttachments(files)]);
-  }, []);
+    const added = toPendingAttachments(files);
+    updateCurrentDraft((current) => ({
+      ...current,
+      attachments: [...current.attachments, ...added],
+    }));
+  }, [updateCurrentDraft]);
 
   const removeAttachment = useCallback((index: number) => {
-    setPendingAttachments((prev) => {
-      URL.revokeObjectURL(prev[index].previewUrl);
-      return prev.filter((_, i) => i !== index);
+    updateCurrentDraft((current) => {
+      URL.revokeObjectURL(current.attachments[index].previewUrl);
+      return {
+        ...current,
+        attachments: current.attachments.filter((_, i) => i !== index),
+      };
     });
-  }, []);
+  }, [updateCurrentDraft]);
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
@@ -95,7 +183,18 @@ export function Composer({
       e?.preventDefault();
       const trimmed = input.trim();
       if (!trimmed && pendingAttachments.length === 0) return;
-      if (isStreaming) return;
+      if (
+        submittingRef.current.has(conversationKey) ||
+        isStreaming ||
+        activeTurnCount >= MAX_CONCURRENT_TURNS
+      ) {
+        return;
+      }
+
+      if (profileMissing) {
+        toast.error("This thread's profile is missing. Select one in the header.");
+        return;
+      }
 
       if (!isConfigured) {
         toast.error("Please set Base URL and Model first");
@@ -109,30 +208,46 @@ export function Composer({
       }
 
       const attachmentsToSend = pendingAttachments;
-      setInput("");
-      setPendingAttachments([]);
+      submittingRef.current.add(conversationKey);
+      updateDraft(conversationKey, () => ({ input: "", attachments: [] }));
       try {
         await sendMessage({ content: trimmed, attachments: attachmentsToSend });
+        attachmentsToSend.forEach((item) =>
+          URL.revokeObjectURL(item.previewUrl),
+        );
       } catch (err) {
-        // Send failed after we cleared the composer. Restore what the user had
-        // typed unless they've already started a new message, and surface the
-        // error instead of dropping it as an unhandled rejection.
-        setInput((cur) => (cur ? cur : input));
-        setPendingAttachments((cur) => (cur.length ? cur : attachmentsToSend));
+        // Restore to the original conversation while it is reachable. A
+        // failed provisional thread is moved into the visible composer, and
+        // any text entered while the send was pending is preserved.
+        const restoreKey = getDraftRestoreKey(
+          conversationKey,
+          conversationKeyRef.current,
+          validConversationIdsRef.current,
+        );
+        updateDraft(restoreKey, (current) => ({
+          input: mergeRestoredInput(input, current.input),
+          attachments: [...attachmentsToSend, ...current.attachments],
+        }));
         toast.error(
           err instanceof Error ? err.message : "Failed to send message",
         );
+      } finally {
+        submittingRef.current.delete(conversationKey);
       }
     },
     [
       input,
       pendingAttachments,
       isStreaming,
+      activeTurnCount,
       isConfigured,
       keysLocked,
+      profileMissing,
       sendMessage,
       onOpenSettings,
       onRequireUnlock,
+      updateDraft,
+      conversationKey,
     ],
   );
 
@@ -162,6 +277,8 @@ export function Composer({
             {pendingAttachments.map((pa, i) => (
               <div key={i} className="relative group">
                 {pa.file.type.startsWith("image/") ? (
+                  // Object URLs are local previews and cannot use next/image.
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={pa.previewUrl}
                     alt={pa.file.name}
@@ -207,42 +324,63 @@ export function Composer({
           >
             <Paperclip className="size-4" />
           </Button>
-          {hasSearchApiKey(settingsToToolContext(settings)) && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  disabled={!isConfigured}
-                  onClick={() =>
-                    updateSettings({ searchEnabled: !settings.searchEnabled })
-                  }
-                  className="shrink-0 size-11"
-                >
-                  <Globe
-                    className={cn(
-                      "size-4 transition-colors",
-                      settings.searchEnabled
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                disabled={!isConfigured || isStreaming}
+                aria-label="Toggle web search"
+                aria-pressed={searchEnabled}
+                onClick={() =>
+                  void toggleSearchEnabled().catch((error) =>
+                    toast.error(
+                      error instanceof Error
+                        ? error.message
+                        : "Failed to update web search",
+                    ),
+                  )
+                }
+                className="shrink-0 size-11"
+              >
+                <Globe
+                  className={cn(
+                    "size-4 transition-colors",
+                    searchEnabled
+                      ? searchAvailable
                         ? "text-blue-500"
-                        : "text-muted-foreground",
-                    )}
-                  />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                {settings.searchEnabled ? "Web search on" : "Web search off"}
-              </TooltipContent>
-            </Tooltip>
-          )}
+                        : "text-amber-500"
+                      : "text-muted-foreground",
+                  )}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              {keysLocked
+                ? "Unlock API keys to use web search"
+                : !searchAvailable
+                  ? "Add a search API key in Profile settings to use web search"
+                  : searchEnabled
+                    ? "Web search on"
+                    : "Web search off"}
+            </TooltipContent>
+          </Tooltip>
           <textarea
             ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) =>
+              updateCurrentDraft((current) => ({
+                ...current,
+                input: e.target.value,
+              }))
+            }
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
-              !isConfigured
+              profileMissing
+                ? "Select a profile for this thread..."
+                : !isConfigured
                 ? "Set Base URL and Model first..."
                 : keysLocked
                   ? "API keys locked — press send to unlock..."
@@ -258,7 +396,8 @@ export function Composer({
               type="button"
               size="icon"
               variant="destructive"
-              onClick={stopStreaming}
+              onClick={() => void stopStreaming()}
+              disabled={turnStatus === "stopping" || turnStatus === "deleting"}
               className="shrink-0 size-11"
             >
               <Square className="size-4" />
@@ -269,7 +408,8 @@ export function Composer({
               size="icon"
               disabled={
                 (!input.trim() && pendingAttachments.length === 0) ||
-                !isConfigured
+                !isConfigured ||
+                activeTurnCount >= MAX_CONCURRENT_TURNS
               }
               className="shrink-0 size-11"
             >

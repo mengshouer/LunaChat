@@ -21,8 +21,10 @@ import { ExportPanel } from "./export-panel";
 import { Composer } from "./composer";
 import { useConfigTransfer } from "./use-config-transfer";
 import { SettingsPanel } from "@/components/settings";
+import { SecurityDialog } from "@/components/settings/security-dialog";
 import { UnlockDialog } from "@/components/settings/unlock-dialog";
 import { PassphraseDialog } from "@/components/settings/passphrase-dialog";
+import { toast } from "sonner";
 
 export function Thread() {
   const {
@@ -37,9 +39,19 @@ export function Thread() {
     switchBranch,
     branchInfo,
     forkThreadFromMessage,
+    isConfigured,
+    keysLocked,
+    profileMissing,
   } = useChat();
-  const { currentThreadId, createNewThread, threads } = useThreads();
-  const { isConfigured } = useSettings();
+  const {
+    currentThreadId,
+    currentConversationId,
+    draftThreadId,
+    openNewChat,
+    bindCurrentThreadProfile,
+    threads,
+  } = useThreads();
+  const { profiles, activeProfileId } = useSettings();
   const [hideToolCalls, setHideToolCalls] = useState(false);
   // SSR and first client render both default to closed so the header toggle
   // matches the server HTML (no hydration mismatch). The sidebar is then
@@ -52,7 +64,9 @@ export function Thread() {
     }
   }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [securityOpen, setSecurityOpen] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  const [openSettingsAfterUnlock, setOpenSettingsAfterUnlock] = useState(false);
 
   const transfer = useConfigTransfer({
     onRequireUnlock: () => setUnlockOpen(true),
@@ -74,10 +88,34 @@ export function Thread() {
     () => threads.find((t) => t.id === currentThreadId)?.title ?? "",
     [threads, currentThreadId],
   );
+  const currentThread = useMemo(
+    () => threads.find((thread) => thread.id === currentThreadId),
+    [currentThreadId, threads],
+  );
+  const selectedProfileId = currentThread?.configId ?? activeProfileId;
+  const validConversationIds = useMemo(
+    () => [...threads.map((thread) => thread.id), draftThreadId],
+    [draftThreadId, threads],
+  );
+
+  const openProfileSettings = () => {
+    if (keysLocked) {
+      setOpenSettingsAfterUnlock(true);
+      setUnlockOpen(true);
+      return;
+    }
+    setSettingsOpen(true);
+  };
 
   const handleRegenerate = async () => {
     if (isStreaming) return;
-    await regenerate();
+    try {
+      await regenerate();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to regenerate response",
+      );
+    }
   };
 
   return (
@@ -93,11 +131,21 @@ export function Thread() {
         <ThreadHeader
           historyOpen={historyOpen}
           onOpenHistory={() => setHistoryOpen(true)}
-          onNewThread={() => createNewThread()}
+          onNewThread={openNewChat}
           title={currentThreadTitle}
           hideToolCalls={hideToolCalls}
           onToggleHideToolCalls={() => setHideToolCalls((v) => !v)}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={openProfileSettings}
+          onOpenSecurity={() => setSecurityOpen(true)}
+          profiles={profiles}
+          selectedProfileId={selectedProfileId}
+          onSelectProfile={(id) =>
+            void bindCurrentThreadProfile(id).catch((error) =>
+              toast.error(
+                error instanceof Error ? error.message : "Failed to select profile",
+              ),
+            )
+          }
           transfer={transfer}
         />
 
@@ -119,7 +167,7 @@ export function Thread() {
                     <Button
                       variant="outline"
                       className="mt-4"
-                      onClick={() => setSettingsOpen(true)}
+                      onClick={openProfileSettings}
                     >
                       <Settings className="size-4 mr-2" /> Open Settings
                     </Button>
@@ -189,16 +237,41 @@ export function Thread() {
           </div>
         </div>
 
+        {profileMissing && (
+          <div className="border-t px-4 py-2 text-sm text-destructive bg-destructive/5">
+            This thread references a missing profile. Select a replacement in
+            the header before sending.
+          </div>
+        )}
+
         <Composer
+          conversationKey={currentConversationId}
+          validConversationIds={validConversationIds}
           isAtBottom={isAtBottom}
           onScrollToBottom={scrollToBottom}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={openProfileSettings}
           onRequireUnlock={() => setUnlockOpen(true)}
         />
       </div>
 
-      <SettingsPanel open={settingsOpen} onOpenChange={setSettingsOpen} />
-      <UnlockDialog open={unlockOpen} onOpenChange={setUnlockOpen} />
+      <SettingsPanel
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        profileId={selectedProfileId}
+      />
+      <SecurityDialog open={securityOpen} onOpenChange={setSecurityOpen} />
+      <UnlockDialog
+        open={unlockOpen}
+        onOpenChange={(open) => {
+          setUnlockOpen(open);
+          if (!open && !keysLocked) return;
+          if (!open) setOpenSettingsAfterUnlock(false);
+        }}
+        onUnlocked={() => {
+          if (openSettingsAfterUnlock) setSettingsOpen(true);
+          setOpenSettingsAfterUnlock(false);
+        }}
+      />
       <PassphraseDialog
         open={transfer.exportPassOpen}
         onOpenChange={transfer.setExportPassOpen}

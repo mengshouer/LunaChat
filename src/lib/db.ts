@@ -1,11 +1,14 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { Attachment } from "./attachments";
 import { getActivePath, chainByCreation } from "./message-tree";
+import type { AppConfigRecord } from "./settings-types";
 
 export interface Thread {
   id: string;
   title: string;
   configId?: string;
+  // Explicit per-thread runtime choice. Missing means use the profile default.
+  searchEnabled?: boolean;
   createdAt: number;
   updatedAt: number;
   // Last message id of the active branch (message tree via Message.parentId)
@@ -38,6 +41,7 @@ export interface ToolCallData {
 class ChatDB extends Dexie {
   threads!: EntityTable<Thread, "id">;
   messages!: EntityTable<Message, "id">;
+  appConfig!: EntityTable<AppConfigRecord, "id">;
 
   constructor() {
     super("chat-app-db");
@@ -69,6 +73,11 @@ class ChatDB extends Dexie {
           });
         }
       });
+    // v5: move profiles/config/encryption metadata into the same database so
+    // config restore and chat import can share one transaction.
+    this.version(5).stores({
+      appConfig: "id",
+    });
   }
 }
 
@@ -102,10 +111,27 @@ export async function getThread(id: string): Promise<Thread | undefined> {
 export async function updateThread(
   id: string,
   updates: Partial<
-    Pick<Thread, "title" | "updatedAt" | "configId" | "activeLeafId">
+    Pick<
+      Thread,
+      "title" | "updatedAt" | "configId" | "activeLeafId" | "searchEnabled"
+    >
   >,
 ): Promise<void> {
   await db.threads.update(id, { ...updates, updatedAt: Date.now() });
+}
+
+export async function setThreadConfigId(
+  threadId: string,
+  configId: string,
+): Promise<void> {
+  await db.threads.update(threadId, { configId });
+}
+
+export async function setThreadSearchEnabled(
+  threadId: string,
+  searchEnabled: boolean,
+): Promise<void> {
+  await db.threads.update(threadId, { searchEnabled });
 }
 
 // Move the active branch pointer without bumping updatedAt, so switching
@@ -124,13 +150,39 @@ export async function deleteThread(id: string): Promise<void> {
   });
 }
 
-export async function addMessage(message: Message): Promise<void> {
-  await db.messages.add(message);
-  // Every message is appended at the end of the active branch, so it always
-  // becomes the new active leaf.
-  await db.threads.update(message.threadId, {
-    updatedAt: Date.now(),
-    activeLeafId: message.id,
+// `bindConfigId` binds the thread to a profile as part of appending its first
+// message. Both the "is it still unbound?" check and the write happen inside
+// the message transaction, so two concurrent first sends cannot each decide
+// they are the one doing the binding, and a failed message append cannot leave
+// a thread bound to a profile it never used.
+export async function addMessage(
+  message: Message,
+  bindConfigId?: string,
+): Promise<void> {
+  await db.transaction("rw", [db.threads, db.messages], async () => {
+    const thread = await db.threads.get(message.threadId);
+    if (!thread) throw new Error("Thread no longer exists");
+    await db.messages.add(message);
+    // Every message is appended at the end of the active branch, so it always
+    // becomes the new active leaf.
+    await db.threads.update(message.threadId, {
+      updatedAt: Date.now(),
+      activeLeafId: message.id,
+      ...(bindConfigId && !thread.configId ? { configId: bindConfigId } : {}),
+    });
+  });
+}
+
+export async function createThreadWithFirstMessage(
+  thread: Thread,
+  message: Message,
+): Promise<void> {
+  if (thread.id !== message.threadId) {
+    throw new Error("First message does not belong to the thread");
+  }
+  await db.transaction("rw", [db.threads, db.messages], async () => {
+    await db.threads.add({ ...thread, activeLeafId: message.id });
+    await db.messages.add(message);
   });
 }
 
@@ -147,26 +199,28 @@ export async function getMessages(threadId: string): Promise<Message[]> {
 export async function deleteLastAssistantMessages(
   threadId: string,
 ): Promise<void> {
-  const [messages, thread] = await Promise.all([
-    getMessages(threadId),
-    getThread(threadId),
-  ]);
-  const path = getActivePath(messages, thread?.activeLeafId);
-  const toDelete: string[] = [];
-  for (let i = path.length - 1; i >= 0; i--) {
-    const msg = path[i];
-    if (msg.role === "assistant" || msg.role === "tool") {
-      toDelete.push(msg.id);
-    } else {
-      break;
+  await db.transaction("rw", [db.threads, db.messages], async () => {
+    const [messages, thread] = await Promise.all([
+      getMessages(threadId),
+      getThread(threadId),
+    ]);
+    const path = getActivePath(messages, thread?.activeLeafId);
+    const toDelete: string[] = [];
+    for (let i = path.length - 1; i >= 0; i--) {
+      const msg = path[i];
+      if (msg.role === "assistant" || msg.role === "tool") {
+        toDelete.push(msg.id);
+      } else {
+        break;
+      }
     }
-  }
-  if (toDelete.length === 0) return;
-  const newLeaf = path[path.length - toDelete.length - 1];
-  await db.messages.bulkDelete(toDelete);
-  await db.threads.update(threadId, {
-    updatedAt: Date.now(),
-    activeLeafId: newLeaf?.id,
+    if (toDelete.length === 0) return;
+    const newLeaf = path[path.length - toDelete.length - 1];
+    await db.messages.bulkDelete(toDelete);
+    await db.threads.update(threadId, {
+      updatedAt: Date.now(),
+      activeLeafId: newLeaf?.id,
+    });
   });
 }
 

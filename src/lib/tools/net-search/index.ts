@@ -56,12 +56,16 @@ export function createNetSearchSpec(context: ToolContext): ToolSpec {
         },
       },
     },
-    execute: async (toolCall: ToolCall) => {
+    execute: async (toolCall: ToolCall, runtimeContext: ToolContext) => {
       const { query, maxResults = 5 } = toolCall.args as {
         query: string;
         maxResults?: number;
       };
-      const results = await provider.search(query, maxResults);
+      const results = await provider.search(
+        query,
+        maxResults,
+        runtimeContext.signal,
+      );
       return JSON.stringify({ results }, null, 2);
     },
   };

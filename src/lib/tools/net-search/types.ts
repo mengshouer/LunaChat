@@ -7,5 +7,9 @@ export interface SearchResult {
 }
 
 export interface SearchProvider {
-  search(query: string, maxResults: number): Promise<SearchResult[]>;
+  search(
+    query: string,
+    maxResults: number,
+    signal?: AbortSignal,
+  ): Promise<SearchResult[]>;
 }

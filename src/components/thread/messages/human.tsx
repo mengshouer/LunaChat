@@ -17,11 +17,15 @@ import {
 } from "@/lib/attachments";
 import { Button } from "@/components/ui/button";
 import { TooltipIconButton } from "../tooltip-icon-button";
+import { toast } from "sonner";
 
 interface HumanMessageProps {
   message: Message;
   isStreaming?: boolean;
-  onEditSubmit?: (newContent: string, attachmentEdit: AttachmentEdit) => void;
+  onEditSubmit?: (
+    newContent: string,
+    attachmentEdit: AttachmentEdit,
+  ) => Promise<void>;
   branchIndex?: number;
   branchCount?: number;
   onSwitchBranch?: (direction: "prev" | "next") => void;
@@ -42,6 +46,8 @@ function AttachmentThumb({
   return (
     <div className="relative group">
       {isImage ? (
+        // Edit previews may be object URLs, which next/image cannot optimize.
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={url}
           alt={name}
@@ -77,6 +83,7 @@ export function HumanMessage({
   const [draft, setDraft] = useState("");
   const [draftKept, setDraftKept] = useState<Attachment[]>([]);
   const [draftAdded, setDraftAdded] = useState<PendingAttachment[]>([]);
+  const [submitting, setSubmitting] = useState(false);
   const editFileInputRef = useRef<HTMLInputElement>(null);
 
   // Mirror of draftAdded so preview object URLs can be revoked when the
@@ -93,6 +100,7 @@ export function HumanMessage({
   );
 
   const startEdit = () => {
+    draftAdded.forEach((item) => URL.revokeObjectURL(item.previewUrl));
     setDraft(message.content);
     setDraftKept(attachments);
     setDraftAdded([]);
@@ -123,14 +131,23 @@ export function HumanMessage({
   const hasDraftContent = (trimmed: string) =>
     !!trimmed || draftKept.length > 0 || draftAdded.length > 0;
 
-  const submitEdit = () => {
+  const submitEdit = async () => {
     // Keep the edit open while streaming — editMessage would silently
     // drop the draft otherwise.
-    if (isStreaming) return;
+    if (isStreaming || submitting || !onEditSubmit) return;
     const trimmed = draft.trim();
     if (!hasDraftContent(trimmed)) return;
-    setIsEditing(false);
-    onEditSubmit?.(trimmed, { kept: draftKept, added: draftAdded });
+    setSubmitting(true);
+    try {
+      await onEditSubmit(trimmed, { kept: draftKept, added: draftAdded });
+      draftAdded.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      setDraftAdded([]);
+      setIsEditing(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to edit message");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (isEditing) {
@@ -161,6 +178,7 @@ export function HumanMessage({
         <textarea
           autoFocus
           value={draft}
+          disabled={submitting}
           onChange={(e) => setDraft(e.target.value)}
           onPaste={(e) => {
             const files = extractClipboardFiles(e.clipboardData);
@@ -177,7 +195,7 @@ export function HumanMessage({
               !e.nativeEvent.isComposing
             ) {
               e.preventDefault();
-              submitEdit();
+              void submitEdit();
             }
           }}
           rows={1}
@@ -201,19 +219,28 @@ export function HumanMessage({
             size="sm"
             title="Add attachment"
             onClick={() => editFileInputRef.current?.click()}
+            disabled={submitting}
           >
             <Paperclip className="size-3.5" />
           </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={cancelEdit}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={cancelEdit}
+            disabled={submitting}
+          >
             Cancel
           </Button>
           <Button
             type="button"
             size="sm"
-            onClick={submitEdit}
-            disabled={isStreaming || !hasDraftContent(draft.trim())}
+            onClick={() => void submitEdit()}
+            disabled={
+              isStreaming || submitting || !hasDraftContent(draft.trim())
+            }
           >
-            Send
+            {submitting ? "Sending..." : "Send"}
           </Button>
         </div>
       </div>
@@ -240,6 +267,8 @@ export function HumanMessage({
               {attachments.map((a) =>
                 a.kind === "image" ? (
                   <a key={a.id} href={a.url} target="_blank" rel="noreferrer">
+                    {/* Persisted attachments are data URLs, not image endpoints. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={a.url}
                       alt={a.name}

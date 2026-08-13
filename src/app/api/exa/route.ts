@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
           text: { maxCharacters: 2000 },
         },
       }),
+      signal: request.signal,
     });
 
     if (!response.ok) {
