@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useThreads } from "@/providers/ThreadProvider";
-import { useChat } from "@/providers/ChatProvider";
+import { useChat } from "@/providers/chat";
 import type { Thread } from "@/lib/db";
 import {
   Sheet,

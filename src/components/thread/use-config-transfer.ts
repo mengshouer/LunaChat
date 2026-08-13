@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useThreads } from "@/providers/ThreadProvider";
 import { useSettings } from "@/providers/SettingsProvider";
-import { useChat } from "@/providers/ChatProvider";
+import { useChat } from "@/providers/chat";
 import {
   exportPlainWithoutKeys,
   exportEncrypted,

@@ -18,7 +18,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
-import { useChat, MAX_CONCURRENT_TURNS } from "@/providers/ChatProvider";
+import { useChat, MAX_CONCURRENT_TURNS } from "@/providers/chat";
 import {
   extractClipboardFiles,
   toPendingAttachments,

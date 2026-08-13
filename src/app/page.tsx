@@ -2,7 +2,7 @@
 
 import { SettingsProvider } from "@/providers/SettingsProvider";
 import { ThreadProvider } from "@/providers/ThreadProvider";
-import { ChatProvider } from "@/providers/ChatProvider";
+import { ChatProvider } from "@/providers/chat";
 import { Thread } from "@/components/thread";
 
 export default function Home() {

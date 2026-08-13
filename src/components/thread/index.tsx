@@ -5,7 +5,7 @@ import { useStickToBottom } from "use-stick-to-bottom";
 import { AnimatePresence } from "framer-motion";
 import { Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useChat } from "@/providers/ChatProvider";
+import { useChat } from "@/providers/chat";
 import { useThreads } from "@/providers/ThreadProvider";
 import { useSettings } from "@/providers/SettingsProvider";
 import type { Message as DBMessage } from "@/lib/db";
