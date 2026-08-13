@@ -93,7 +93,7 @@ export function AssistantMessage({
           <div
             className={cn(
               "flex gap-2 items-center mr-auto transition-opacity",
-              "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
+              "can-hover:opacity-0 group-focus-within:opacity-100 can-hover:group-hover:opacity-100",
             )}
           >
             <CommandBar

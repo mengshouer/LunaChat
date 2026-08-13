@@ -3,6 +3,8 @@
 @plugin "tailwindcss-animate";
 
 @custom-variant dark (&:is(.dark *));
+@custom-media --can-hover (hover: hover);
+@custom-variant can-hover (@media (--can-hover));
 
 :root {
   color-scheme: light;

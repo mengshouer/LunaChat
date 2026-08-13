@@ -85,7 +85,7 @@ function ThreadList({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-6 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                className="size-6 p-1 can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
                   startEditing(t);
@@ -96,7 +96,7 @@ function ThreadList({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-6 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                className="size-6 p-1 can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
                   onDeleteThread(t.id);

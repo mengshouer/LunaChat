@@ -56,7 +56,7 @@ function AttachmentThumb({
       <button
         type="button"
         onClick={onRemove}
-        className="absolute -top-1.5 -right-1.5 size-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+        className="absolute -top-1.5 -right-1.5 size-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity"
       >
         <X className="size-2.5" />
       </button>
@@ -229,7 +229,7 @@ export function HumanMessage({
             side="left"
             disabled={isStreaming}
             onClick={startEdit}
-            className="opacity-0 group-hover:opacity-100 transition-opacity"
+            className="can-hover:opacity-0 can-hover:group-hover:opacity-100 transition-opacity"
           >
             <Pencil className="size-3.5" />
           </TooltipIconButton>
