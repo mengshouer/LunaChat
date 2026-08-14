@@ -1,10 +1,12 @@
 {
-  "name": "chat",
+  "name": "lunachat",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Browser-native AI chat with ReAct tool loop, message branching, and multi-provider support",
+  "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "next dev --port 3001",
+    "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

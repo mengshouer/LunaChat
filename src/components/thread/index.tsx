@@ -157,7 +157,7 @@ export function Thread() {
             {!currentThreadId && messages.length === 0 && !isStreaming && (
               <div className="flex items-center justify-center h-full min-h-[50vh]">
                 <div className="text-center text-muted-foreground">
-                  <h2 className="text-2xl font-semibold mb-2">Chat</h2>
+                  <h2 className="text-2xl font-semibold mb-2">LunaChat</h2>
                   <p className="text-sm">
                     {isConfigured
                       ? "Start a conversation"

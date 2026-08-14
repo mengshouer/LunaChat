@@ -13,7 +13,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Chat",
+  title: "LunaChat",
   description: "Browser-native AI chat with ReAct loop",
 };
 
