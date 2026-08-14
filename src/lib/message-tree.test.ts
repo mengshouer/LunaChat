@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Message } from "./db";
+import { textBlocks } from "./content-blocks";
 import {
   chainByCreation,
   getActivePath,
@@ -11,7 +12,7 @@ function msg(partial: Partial<Message> & { id: string }): Message {
   return {
     threadId: "t1",
     role: "user",
-    content: partial.id,
+    content: textBlocks(partial.id),
     createdAt: 0,
     ...partial,
   };

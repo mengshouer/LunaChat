@@ -188,6 +188,7 @@ export function ProviderForm({ value: settings, onChange }: SettingsFormProps) {
           }
         >
           <option value="openai">OpenAI Compatible</option>
+          <option value="openai-responses">OpenAI (Responses)</option>
           <option value="anthropic">Anthropic</option>
         </select>
         <p className="text-xs text-muted-foreground">
@@ -332,6 +333,243 @@ export function ProviderForm({ value: settings, onChange }: SettingsFormProps) {
         </div>
       </div>
 
+    </div>
+  );
+}
+
+export function ToolsForm({ value: settings, onChange }: SettingsFormProps) {
+  const searchProviderConfig = SEARCH_PROVIDER_CONFIGS[settings.searchProvider] ?? null;
+  const builtinSearchOn =
+    (settings.provider === "openai-responses" &&
+      (settings.responseBuiltinTools?.web_search || settings.responseBuiltinTools?.web_search_preview)) ||
+    (settings.provider === "anthropic" && settings.anthropicBuiltinTools?.web_search);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Built-in tools — shown first when using openai-responses */}
+      {settings.provider === "openai-responses" && (
+        <section className="rounded-lg border p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-medium">Built-in Tools</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Server-side tools executed by OpenAI. No API key required.
+            </p>
+          </div>
+          {([
+            { key: "web_search", label: "Web Search" },
+            { key: "web_search_preview", label: "Web Search Preview" },
+            { key: "image_generation", label: "Image Generation" },
+            { key: "code_interpreter", label: "Code Interpreter" },
+            { key: "file_search", label: "File Search" },
+          ] as const).map(({ key, label }) => (
+            <div key={key} className="flex items-center justify-between gap-4">
+              <Label htmlFor={`builtin-${key}`} className="text-sm font-normal">
+                {label}
+              </Label>
+              <Switch
+                id={`builtin-${key}`}
+                checked={settings.responseBuiltinTools?.[key] ?? false}
+                onCheckedChange={(checked) =>
+                  onChange({
+                    responseBuiltinTools: {
+                      ...settings.responseBuiltinTools,
+                      [key]: checked,
+                    },
+                  })
+                }
+              />
+            </div>
+          ))}
+          {(settings.responseBuiltinTools?.web_search || settings.responseBuiltinTools?.web_search_preview) && (
+            <div className="flex items-center justify-between gap-4 pl-1">
+              <Label htmlFor="searchContextSize" className="text-xs text-muted-foreground">
+                Search Context Size
+              </Label>
+              <select
+                id="searchContextSize"
+                className="border-input bg-background text-xs rounded-md border px-2 py-1 w-24"
+                value={settings.responseBuiltinTools?.web_search_context_size ?? "medium"}
+                onChange={(e) =>
+                  onChange({
+                    responseBuiltinTools: {
+                      ...settings.responseBuiltinTools,
+                      web_search_context_size: e.target.value as "low" | "medium" | "high",
+                    },
+                  })
+                }
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+          )}
+          {settings.responseBuiltinTools?.file_search && (
+            <div className="space-y-1.5 pl-1">
+              <Label htmlFor="vectorStoreIds" className="text-xs text-muted-foreground">
+                Vector Store IDs (one per line)
+              </Label>
+              <textarea
+                id="vectorStoreIds"
+                placeholder="vs_abc123"
+                value={(settings.responseBuiltinTools?.file_search_vector_store_ids ?? []).join("\n")}
+                onChange={(e) =>
+                  onChange({
+                    responseBuiltinTools: {
+                      ...settings.responseBuiltinTools,
+                      file_search_vector_store_ids: e.target.value
+                        .split("\n")
+                        .map((s) => s.trim()),
+                    },
+                  })
+                }
+                rows={2}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
+              />
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-4 border-t pt-3">
+            <div className="space-y-0.5">
+              <Label htmlFor="responseStore" className="text-sm font-normal">Store Responses</Label>
+              <p className="text-xs text-muted-foreground">
+                Prompt caching (50% input discount).
+              </p>
+            </div>
+            <Switch
+              id="responseStore"
+              checked={settings.responseStore ?? true}
+              onCheckedChange={(checked) => onChange({ responseStore: checked })}
+            />
+          </div>
+        </section>
+      )}
+
+      {/* Built-in tools — Anthropic */}
+      {settings.provider === "anthropic" && (
+        <section className="rounded-lg border p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-medium">Built-in Tools</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Server-side tools executed by Anthropic.
+            </p>
+          </div>
+          {([
+            { key: "web_search", label: "Web Search" },
+            { key: "code_execution", label: "Code Execution" },
+          ] as const).map(({ key, label }) => (
+            <div key={key} className="flex items-center justify-between gap-4">
+              <Label htmlFor={`anthropic-${key}`} className="text-sm font-normal">
+                {label}
+              </Label>
+              <Switch
+                id={`anthropic-${key}`}
+                checked={settings.anthropicBuiltinTools?.[key] ?? false}
+                onCheckedChange={(checked) =>
+                  onChange({
+                    anthropicBuiltinTools: {
+                      ...settings.anthropicBuiltinTools,
+                      [key]: checked,
+                    },
+                  })
+                }
+              />
+            </div>
+          ))}
+        </section>
+      )}
+
+      {/* Custom search tool — hidden when built-in search covers it */}
+      {!builtinSearchOn && (
+        <section className="rounded-lg border p-4 space-y-4">
+          <div>
+            <h3 className="text-sm font-medium">
+              {settings.provider === "openai-responses" || settings.provider === "anthropic"
+                ? "Custom Search"
+                : "Web Search"}
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {settings.provider === "openai-responses" || settings.provider === "anthropic"
+                ? "Local search tool via third-party API. Used when built-in search is off."
+                : "Enable web search for the AI assistant via third-party API."}
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor="searchEnabledByDefault" className="text-sm font-normal">
+              Enable by default
+            </Label>
+            <Switch
+              id="searchEnabledByDefault"
+              checked={settings.searchEnabledByDefault}
+              onCheckedChange={(checked) =>
+                onChange({ searchEnabledByDefault: checked })
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="searchProvider">Search Engine</Label>
+            <select
+              id="searchProvider"
+              className="border-input bg-background text-sm rounded-md border px-3 py-2 w-full"
+              value={settings.searchProvider}
+              onChange={(e) =>
+                onChange({ searchProvider: e.target.value as SearchProviderId })
+              }
+            >
+              {!searchProviderConfig && (
+                <option value={settings.searchProvider}>
+                  {settings.searchProvider} (unsupported)
+                </option>
+              )}
+              <option value="tavily">Tavily</option>
+              <option value="exa">Exa</option>
+            </select>
+          </div>
+
+          {searchProviderConfig && (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor={searchProviderConfig.apiKeyField}>
+                  {searchProviderConfig.label} API Key
+                </Label>
+                <PasswordInput
+                  id={searchProviderConfig.apiKeyField}
+                  placeholder={searchProviderConfig.apiKeyPlaceholder}
+                  value={(settings[searchProviderConfig.apiKeyField] as string) ?? ""}
+                  onChange={(e) =>
+                    onChange({
+                      [searchProviderConfig.apiKeyField]: e.target.value,
+                    } as Partial<Settings>)
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor={searchProviderConfig.baseUrlField}>
+                  {searchProviderConfig.label} Base URL
+                </Label>
+                <Input
+                  id={searchProviderConfig.baseUrlField}
+                  placeholder={searchProviderConfig.defaultBaseUrl}
+                  value={(settings[searchProviderConfig.baseUrlField] as string) ?? ""}
+                  onChange={(e) =>
+                    onChange({
+                      [searchProviderConfig.baseUrlField]: e.target.value,
+                    } as Partial<Settings>)
+                  }
+                />
+              </div>
+            </>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+export function PromptForm({ value: settings, onChange }: SettingsFormProps) {
+  return (
+    <div className="flex flex-col gap-4">
       <div className="space-y-2">
         <Label htmlFor="systemPrompt">System Prompt</Label>
         <Textarea
@@ -339,95 +577,12 @@ export function ProviderForm({ value: settings, onChange }: SettingsFormProps) {
           placeholder="Custom system prompt..."
           value={settings.systemPrompt}
           onChange={(e) => onChange({ systemPrompt: e.target.value })}
-          className="min-h-24"
+          className="min-h-48"
         />
-      </div>
-
-    </div>
-  );
-}
-
-export function ToolsForm({ value: settings, onChange }: SettingsFormProps) {
-  const searchProviderConfig = SEARCH_PROVIDER_CONFIGS[settings.searchProvider] ?? null;
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-4">
-        <div className="space-y-1">
-          <Label htmlFor="searchEnabledByDefault">Web search by default</Label>
-          <p className="text-xs text-muted-foreground">
-            New chats inherit this value and can override it per thread.
-          </p>
-        </div>
-        <Switch
-          id="searchEnabledByDefault"
-          checked={settings.searchEnabledByDefault}
-          onCheckedChange={(checked) =>
-            onChange({ searchEnabledByDefault: checked })
-          }
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="searchProvider">Search Engine</Label>
-        <select
-          id="searchProvider"
-          className="border-input bg-background text-sm rounded-md border px-3 py-2 w-full"
-          value={settings.searchProvider}
-          onChange={(e) =>
-            onChange({ searchProvider: e.target.value as SearchProviderId })
-          }
-        >
-          {!searchProviderConfig && (
-            <option value={settings.searchProvider}>
-              {settings.searchProvider} (unsupported)
-            </option>
-          )}
-          <option value="tavily">Tavily</option>
-          <option value="exa">Exa</option>
-        </select>
         <p className="text-xs text-muted-foreground">
-          Select the search engine for web search tool
+          Instructions sent at the start of every conversation. Leave empty for provider default.
         </p>
       </div>
-
-      {searchProviderConfig && (
-        <>
-          <div className="space-y-2">
-            <Label htmlFor={searchProviderConfig.apiKeyField}>
-              {searchProviderConfig.label} API Key
-            </Label>
-            <PasswordInput
-              id={searchProviderConfig.apiKeyField}
-              placeholder={searchProviderConfig.apiKeyPlaceholder}
-              value={(settings[searchProviderConfig.apiKeyField] as string) ?? ""}
-              onChange={(e) =>
-                onChange({
-                  [searchProviderConfig.apiKeyField]: e.target.value,
-                } as Partial<Settings>)
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Enables web search tool for the AI assistant
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor={searchProviderConfig.baseUrlField}>
-              {searchProviderConfig.label} Base URL
-            </Label>
-            <Input
-              id={searchProviderConfig.baseUrlField}
-              placeholder={searchProviderConfig.defaultBaseUrl}
-              value={(settings[searchProviderConfig.baseUrlField] as string) ?? ""}
-              onChange={(e) =>
-                onChange({
-                  [searchProviderConfig.baseUrlField]: e.target.value,
-                } as Partial<Settings>)
-              }
-            />
-          </div>
-        </>
-      )}
     </div>
   );
 }

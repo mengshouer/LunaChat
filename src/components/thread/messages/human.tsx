@@ -8,6 +8,7 @@ import {
   X,
 } from "lucide-react";
 import type { Message } from "@/lib/db";
+import { blocksToText } from "@/lib/content-blocks";
 import {
   extractClipboardFiles,
   toPendingAttachments,
@@ -101,7 +102,7 @@ export function HumanMessage({
 
   const startEdit = () => {
     draftAdded.forEach((item) => URL.revokeObjectURL(item.previewUrl));
-    setDraft(message.content);
+    setDraft(blocksToText(message.content));
     setDraftKept(attachments);
     setDraftAdded([]);
     setIsEditing(true);
@@ -291,9 +292,9 @@ export function HumanMessage({
               )}
             </div>
           )}
-          {message.content && (
+          {blocksToText(message.content) && (
             <p className="px-4 py-2 rounded-3xl bg-muted ml-auto max-w-full whitespace-pre-wrap break-words">
-              {message.content}
+              {blocksToText(message.content)}
             </p>
           )}
         </div>

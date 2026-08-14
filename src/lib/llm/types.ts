@@ -20,8 +20,54 @@ export interface ChatMessage {
   thinkingDuration?: number;
 }
 
+/** Reasoning effort level for models that support extended thinking. */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 /** Logical provider identifier used for dispatching to concrete LLM clients. */
-export type ProviderType = "openai" | "anthropic";
+export type ProviderType = "openai" | "anthropic" | "openai-responses";
+
+/** Built-in tools available with the OpenAI Responses API. */
+export interface ResponseBuiltinTools {
+  web_search?: boolean;
+  web_search_preview?: boolean;
+  image_generation?: boolean;
+  code_interpreter?: boolean;
+  file_search?: boolean;
+  file_search_vector_store_ids?: string[];
+  web_search_context_size?: "low" | "medium" | "high";
+}
+
+/** Built-in tools available with the Anthropic Messages API (server-side). */
+export interface AnthropicBuiltinTools {
+  web_search?: boolean;
+  code_execution?: boolean;
+}
+export interface Citation {
+  index: number;
+  title: string;
+  url: string;
+}
+
+/** Structured content block for rich assistant messages. */
+export type ContentBlock =
+  | { type: "text"; text: string; citations?: Citation[] }
+  | { type: "image"; url: string; alt?: string }
+  | { type: "code_input"; code: string }
+  | { type: "code_output"; text: string }
+  | { type: "search_indicator"; query: string; status: "searching" | "done" }
+  | { type: "file_search_indicator"; query: string; status: "searching" | "done" };
+
+/** Events emitted by built-in tools during streaming. */
+export type BuiltinToolEvent =
+  | { type: "web_search_start"; query: string }
+  | { type: "web_search_done"; query: string }
+  | { type: "image_generation_start" }
+  | { type: "image_generation_done"; url: string }
+  | { type: "code_interpreter_start"; code: string }
+  | { type: "code_interpreter_done"; output: string }
+  | { type: "file_search_start"; query: string }
+  | { type: "file_search_done"; query: string }
+  | { type: "citations"; citations: Citation[] };
 
 /**
  * How HTTP requests to the LLM / tools should be made:
@@ -41,6 +87,13 @@ export interface ProviderConfig {
   // Optional sampling params; undefined = not sent (provider default).
   temperature?: number;
   maxTokens?: number;
+  // OpenAI Responses API specific
+  responseBuiltinTools?: ResponseBuiltinTools;
+  responseStore?: boolean;
+  // Anthropic server-side tools
+  anthropicBuiltinTools?: AnthropicBuiltinTools;
+  // Reasoning effort control
+  reasoningEffort?: ReasoningEffort;
 }
 
 /** JSON schema of a single callable tool exposed to the LLM. */
@@ -58,6 +111,7 @@ export interface StreamCallbacks {
   onToken: (token: string) => void;
   onThinkingToken: (token: string) => void;
   onToolCall: (toolCalls: ToolCall[]) => void;
+  onBuiltinToolEvent?: (event: BuiltinToolEvent) => void;
   onDone: (fullContent: string, toolCalls: ToolCall[], reasoningContent?: string) => void;
 }
 

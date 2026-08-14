@@ -1,5 +1,6 @@
 import type { ToolCallData, Message } from "@/lib/db";
 import type { ToolCall } from "@/lib/llm/types";
+import { blocksToText } from "@/lib/content-blocks";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, ChevronUp } from "lucide-react";
@@ -26,19 +27,18 @@ function ToolCallWithResultCard({
   if (result) {
     let parsedContent: unknown;
     let isJsonContent = false;
+    const rawContent = blocksToText(result.content);
 
     try {
-      if (typeof result.content === "string") {
-        parsedContent = JSON.parse(result.content);
-        isJsonContent = true;
-      }
+      parsedContent = JSON.parse(rawContent);
+      isJsonContent = true;
     } catch {
-      parsedContent = result.content;
+      parsedContent = rawContent;
     }
 
     const contentStr = isJsonContent
       ? JSON.stringify(parsedContent, null, 2)
-      : String(result.content);
+      : rawContent;
     const contentLines = contentStr.split("\n");
     shouldTruncate = contentLines.length > 4 || contentStr.length > 500;
 
@@ -157,19 +157,18 @@ export function ToolResult({ message }: { message: Message }) {
 
   let parsedContent: unknown;
   let isJsonContent = false;
+  const rawContent = blocksToText(message.content);
 
   try {
-    if (typeof message.content === "string") {
-      parsedContent = JSON.parse(message.content);
-      isJsonContent = true;
-    }
+    parsedContent = JSON.parse(rawContent);
+    isJsonContent = true;
   } catch {
-    parsedContent = message.content;
+    parsedContent = rawContent;
   }
 
   const contentStr = isJsonContent
     ? JSON.stringify(parsedContent, null, 2)
-    : String(message.content);
+    : rawContent;
   const contentLines = contentStr.split("\n");
   const shouldTruncate = contentLines.length > 4 || contentStr.length > 500;
   const displayedContent =

@@ -1,15 +1,17 @@
 import { describe, it, expect } from "vitest";
 import type { Message } from "./db";
 import type { Attachment } from "./attachments";
+import { textBlocks, blocksToText } from "./content-blocks";
 import { buildHistory, normalizeHistoryPath } from "./chat-history";
 
-function msg(partial: Partial<Message> & { id: string }): Message {
+function msg(partial: Partial<Omit<Message, "content">> & { id: string; content?: string }): Message {
+  const { content: rawContent, ...rest } = partial;
   return {
     threadId: "t1",
     role: "user",
-    content: "",
+    content: textBlocks(rawContent ?? ""),
     createdAt: 0,
-    ...partial,
+    ...rest,
   };
 }
 
@@ -101,7 +103,7 @@ describe("buildHistory attachment handling", () => {
 function carrier(
   id: string,
   calls: { id: string; name: string }[],
-  extra?: Partial<Message>,
+  extra?: Partial<Omit<Message, "content">> & { content?: string },
 ): Message {
   return msg({
     id,
@@ -111,7 +113,7 @@ function carrier(
   });
 }
 
-function tool(id: string, callId: string, extra?: Partial<Message>): Message {
+function tool(id: string, callId: string, extra?: Partial<Omit<Message, "content">> & { content?: string }): Message {
   return msg({
     id,
     role: "tool",
@@ -178,7 +180,7 @@ describe("normalizeHistoryPath", () => {
     expect(stub.role).toBe("tool");
     expect(stub.toolCallId).toBe("tc1");
     expect(stub.name).toBe("net_search");
-    expect(JSON.parse(stub.content)).toEqual({
+    expect(JSON.parse(blocksToText(stub.content))).toEqual({
       error: "Tool execution was interrupted",
     });
   });

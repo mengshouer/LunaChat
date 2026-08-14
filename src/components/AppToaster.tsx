@@ -7,5 +7,5 @@ import { useTheme } from "@/providers/ThemeProvider";
 // must be passed explicitly from ThemeProvider.
 export function AppToaster() {
   const { resolvedTheme } = useTheme();
-  return <Toaster position="top-right" theme={resolvedTheme} />;
+  return <Toaster position="top-center" theme={resolvedTheme} closeButton />;
 }

@@ -1,5 +1,6 @@
 import type { Message } from "@/lib/db";
 import type { ToolCall } from "@/lib/llm/types";
+import { blocksToText } from "@/lib/content-blocks";
 import { CommandBar } from "./shared";
 import { MarkdownText } from "../markdown-text";
 import { ToolCalls, ToolResult } from "./tool-calls";
@@ -39,13 +40,15 @@ export function AssistantMessage({
 
   const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
   const isErrorMessage = message.name === "error";
+  const textContent = blocksToText(message.content);
+  const displayContent = textContent.trim();
 
   // Tool-call-only step: nothing visible remains when tools are hidden,
   // so skip entirely instead of leaving an empty block in the gap-4 list.
   if (
     hideToolCalls &&
     hasToolCalls &&
-    !message.content &&
+    !displayContent &&
     !message.reasoningContent
   ) {
     return null;
@@ -61,18 +64,18 @@ export function AssistantMessage({
             duration={message.thinkingDuration}
           />
         )}
-        {message.content && message.content.length > 0 && (
+        {displayContent && (
           <div className="py-1 max-w-full break-words">
             {isErrorMessage ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/10 text-destructive px-3 py-2 text-sm">
-                <MarkdownText>{message.content}</MarkdownText>
+                <MarkdownText>{textContent}</MarkdownText>
               </div>
             ) : (
-              <MarkdownText>{message.content}</MarkdownText>
+              <MarkdownText>{textContent}</MarkdownText>
             )}
           </div>
         )}
-        {(!message.content || message.content.length === 0) &&
+        {!displayContent &&
           !hasToolCalls && (
             <div className="py-1">
               <MarkdownText>{"**Error:** Unknown error"}</MarkdownText>
@@ -97,7 +100,7 @@ export function AssistantMessage({
             )}
           >
             <CommandBar
-              content={message.content}
+              content={textContent}
               isLoading={isLoading}
               isAiMessage={true}
               handleRegenerate={isLastMessage ? handleRegenerate : undefined}

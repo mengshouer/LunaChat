@@ -32,7 +32,12 @@ export function resolveLLMEndpoint(
   const raw = baseUrl.trim().replace(/\/+$/, "");
   if (!raw) return "";
 
-  const chatPath = provider === "anthropic" ? "/v1/messages" : "/v1/chat/completions";
+  const chatPath =
+    provider === "anthropic"
+      ? "/v1/messages"
+      : provider === "openai-responses"
+        ? "/v1/responses"
+        : "/v1/chat/completions";
   const modelsPath = "/v1/models";
 
   let url: URL;
@@ -47,7 +52,11 @@ export function resolveLLMEndpoint(
 
   if (kind === "chat") {
     if (!hasPath || pathname === "/") return appendPath(raw, chatPath);
-    if (pathname === "/v1") return appendPath(raw, provider === "anthropic" ? "/messages" : "/chat/completions");
+    if (pathname === "/v1") {
+      if (provider === "anthropic") return appendPath(raw, "/messages");
+      if (provider === "openai-responses") return appendPath(raw, "/responses");
+      return appendPath(raw, "/chat/completions");
+    }
     return raw;
   }
 

@@ -16,8 +16,16 @@ export const PasswordInput = React.forwardRef<
   return (
     <div className="relative w-full">
       <Input
-        type={showPassword ? "text" : "password"}
-        className={cn("hide-password-toggle pr-10", className)}
+        type="text"
+        autoComplete="off"
+        data-1p-ignore
+        data-lpignore="true"
+        data-form-type="other"
+        className={cn(
+          "pr-10",
+          !showPassword && "password-mask",
+          className,
+        )}
         ref={ref}
         {...props}
       />
@@ -39,11 +47,8 @@ export const PasswordInput = React.forwardRef<
       </Button>
 
       <style>{`
-        .hide-password-toggle::-ms-reveal,
-        .hide-password-toggle::-ms-clear {
-          visibility: hidden;
-          pointer-events: none;
-          display: none;
+        .password-mask {
+          -webkit-text-security: disc;
         }
       `}</style>
     </div>

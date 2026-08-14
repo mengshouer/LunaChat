@@ -1,4 +1,4 @@
-import type { ChatMessage, ToolCall, ProviderConfig, StreamCallbacks } from "./llm/types";
+import type { ChatMessage, ToolCall, ProviderConfig, StreamCallbacks, BuiltinToolEvent } from "./llm/types";
 import type { ToolRegistry, ToolContext } from "./tools/registry";
 import { getLLMClient } from "./llm/providers";
 
@@ -8,6 +8,7 @@ export interface ReactLoopCallbacks {
   onToken: (token: string) => void;
   onThinkingToken: (token: string) => void;
   onToolCallStart: (toolCalls: ToolCall[]) => void;
+  onBuiltinToolEvent?: (event: BuiltinToolEvent) => void;
   // Called after each iteration's stream ends, BEFORE its tools run. The
   // caller awaits it to persist the assistant message first, so the DB
   // parentId chain stays ordered assistant → tool → next assistant.
@@ -70,6 +71,7 @@ export async function runReactLoop(
           iterToolCalls = tcs;
           callbacks.onToolCallStart(tcs);
         },
+        onBuiltinToolEvent: callbacks.onBuiltinToolEvent,
         onDone: (content, toolCalls, reasoningContent) => {
           if (thinkingStart !== null && thinkingEnd === null) {
             thinkingEnd = Date.now();

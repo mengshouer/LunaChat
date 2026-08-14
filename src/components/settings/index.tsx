@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ProviderForm, ToolsForm } from "./provider-form";
+import { ProviderForm, PromptForm, ToolsForm } from "./provider-form";
 import { ProfileManager } from "./profile-manager";
 import { useSettings } from "@/providers/SettingsProvider";
 import {
@@ -142,7 +142,7 @@ export function SettingsPanel({
             menu before editing a profile.
           </div>
         ) : (
-          <div className="px-4 pb-4 overflow-y-auto flex-1">
+          <form className="px-4 pb-4 overflow-y-auto flex-1" autoComplete="off" onSubmit={(e) => e.preventDefault()}>
             <fieldset disabled={busy} className="contents">
               <ProfileManager
                 selectedProfileId={selectedProfileId}
@@ -155,6 +155,9 @@ export function SettingsPanel({
                   <TabsTrigger value="provider" className="flex-1">
                     Provider
                   </TabsTrigger>
+                  <TabsTrigger value="prompt" className="flex-1">
+                    Prompt
+                  </TabsTrigger>
                   <TabsTrigger value="tools" className="flex-1">
                     Tools
                   </TabsTrigger>
@@ -166,12 +169,15 @@ export function SettingsPanel({
                     onChange={updateDraft}
                   />
                 </TabsContent>
+                <TabsContent value="prompt">
+                  <PromptForm value={draft} onChange={updateDraft} />
+                </TabsContent>
                 <TabsContent value="tools">
                   <ToolsForm value={draft} onChange={updateDraft} />
                 </TabsContent>
               </Tabs>
             </fieldset>
-          </div>
+          </form>
         )}
         <DialogFooter className="border-t">
           <Button type="button" variant="ghost" onClick={handleCancel} disabled={busy}>

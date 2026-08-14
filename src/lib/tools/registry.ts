@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolCall } from "../llm/types";
+import type { ToolDefinition, ToolCall, ProviderType, ResponseBuiltinTools, AnthropicBuiltinTools } from "../llm/types";
 import type { SearchProviderId } from "./net-search/types";
 import type { Settings } from "../settings-types";
 import { createNetSearchSpec, hasSearchApiKey } from "./net-search";
@@ -25,6 +25,10 @@ export interface ToolContext {
   tavilyApiKey: string;
   tavilyBaseUrl: string;
   signal?: AbortSignal;
+  // Provider info for mutual exclusion logic
+  provider?: ProviderType;
+  responseBuiltinTools?: ResponseBuiltinTools;
+  anthropicBuiltinTools?: AnthropicBuiltinTools;
 }
 
 // Projects the search-related fields of Settings into a ToolContext. Single
@@ -42,6 +46,9 @@ export function settingsToToolContext(
     tavilyApiKey: settings.tavilyApiKey,
     tavilyBaseUrl: settings.tavilyBaseUrl,
     signal,
+    provider: settings.provider,
+    responseBuiltinTools: settings.responseBuiltinTools,
+    anthropicBuiltinTools: settings.anthropicBuiltinTools,
   };
 }
 
@@ -54,10 +61,24 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   const specs = [] as { definition: ToolDefinition; execute: (toolCall: ToolCall, ctx: ToolContext) => Promise<string> }[];
   const definitions: ToolDefinition[] = [];
 
-  if (isSearchToolEnabled(context)) {
+  // Mutual exclusion: skip local net_search when built-in web_search is enabled
+  const builtinWebSearch =
+    (context.provider === "openai-responses" &&
+      (context.responseBuiltinTools?.web_search || context.responseBuiltinTools?.web_search_preview)) ||
+    (context.provider === "anthropic" && context.anthropicBuiltinTools?.web_search);
+
+  if (isSearchToolEnabled(context) && !builtinWebSearch) {
     const netSearchSpec = createNetSearchSpec(context);
     specs.push(netSearchSpec);
     definitions.push(netSearchSpec.definition);
+  }
+
+  // Names of built-in tools that may be returned as regular tool_use by
+  // proxies that don't support server-side execution.
+  const builtinToolNames = new Set<string>();
+  if (context.provider === "anthropic") {
+    if (context.anthropicBuiltinTools?.web_search) builtinToolNames.add("web_search");
+    if (context.anthropicBuiltinTools?.code_execution) builtinToolNames.add("code_execution");
   }
 
   async function execute(
@@ -66,6 +87,13 @@ export function createToolRegistry(context: ToolContext): ToolRegistry {
   ): Promise<string> {
     const spec = specs.find((s) => s.definition.function.name === toolCall.name);
     if (!spec) {
+      // Built-in tool returned as regular tool_use by a proxy without
+      // server-side execution — tell the model it's unavailable.
+      if (builtinToolNames.has(toolCall.name)) {
+        return JSON.stringify({
+          error: `The ${toolCall.name} tool requires the official API endpoint with server-side execution. It is not available through this proxy. Please answer based on your existing knowledge.`,
+        });
+      }
       return JSON.stringify({ error: `Unknown tool: ${toolCall.name}` });
     }
     try {

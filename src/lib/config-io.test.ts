@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { textBlocks } from "./content-blocks";
 import {
   buildChatImportAggregates,
   combineImportedProfiles,
@@ -24,7 +25,7 @@ function message(partial: Partial<Message> = {}): Message {
     id: "message-1",
     threadId: "thread-1",
     role: "user",
-    content: "hello",
+    content: textBlocks("hello"),
     createdAt: 1,
     ...partial,
   };

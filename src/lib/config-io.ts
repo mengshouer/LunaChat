@@ -1,5 +1,6 @@
 import { db, type Message, type Thread } from "./db";
 import { chainByCreation } from "./message-tree";
+import { textBlocks } from "./content-blocks";
 import { decryptJson, encryptJson, isEncrypted } from "./crypto";
 import {
   normalizeProfile,
@@ -482,7 +483,7 @@ export function buildChatImportAggregates(chatData: ExportData["chatData"]): Arr
       typeof rawMessage.threadId !== "string" ||
       !rawMessage.threadId ||
       !["user", "assistant", "tool"].includes(rawMessage.role) ||
-      typeof rawMessage.content !== "string" ||
+      typeof rawMessage.content !== "string" && !Array.isArray(rawMessage.content) ||
       typeof rawMessage.createdAt !== "number" ||
       !Number.isFinite(rawMessage.createdAt) ||
       (rawMessage.parentId !== undefined &&
@@ -507,7 +508,12 @@ export function buildChatImportAggregates(chatData: ExportData["chatData"]): Arr
     }
     messageIds.add(rawMessage.id);
     const list = messagesByThread.get(rawMessage.threadId) ?? [];
-    list.push({ ...rawMessage });
+    // Normalize legacy string content to ContentBlock[]
+    const normalizedContent =
+      typeof rawMessage.content === "string"
+        ? textBlocks(rawMessage.content)
+        : rawMessage.content;
+    list.push({ ...rawMessage, content: normalizedContent });
     messagesByThread.set(rawMessage.threadId, list);
   }
 

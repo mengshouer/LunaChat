@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { Attachment } from "./attachments";
+import type { ContentBlock } from "./llm/types";
 import { getActivePath, chainByCreation } from "./message-tree";
 import type { AppConfigRecord } from "./settings-types";
 
@@ -19,7 +20,7 @@ export interface Message {
   id: string;
   threadId: string;
   role: "user" | "assistant" | "tool";
-  content: string;
+  content: ContentBlock[];
   toolCalls?: ToolCallData[];
   toolCallId?: string;
   name?: string;

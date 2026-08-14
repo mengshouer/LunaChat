@@ -213,6 +213,9 @@ export async function streamOpenAI(
 
   if (config.temperature !== undefined) body.temperature = config.temperature;
   if (config.maxTokens !== undefined) body.max_tokens = config.maxTokens;
+  if (config.reasoningEffort && config.reasoningEffort !== "none") {
+    body.reasoning_effort = config.reasoningEffort;
+  }
 
   if (tools.length > 0) {
     body.tools = tools;

@@ -4,6 +4,7 @@ import type {
   ToolCall,
   ToolDefinition,
   StreamCallbacks,
+  AnthropicBuiltinTools,
 } from "../types";
 import { fetchWithMode } from "../http";
 import { resolveLLMEndpoint } from "../endpoints";
@@ -30,9 +31,10 @@ interface AnthropicContentBlock {
 }
 
 interface AnthropicTool {
-  name: string;
-  description: string;
-  input_schema: Record<string, unknown>;
+  name?: string;
+  type?: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
 }
 
 function toAnthropicMessages(messages: ChatMessage[]): AnthropicMessage[] {
@@ -137,12 +139,30 @@ function toAnthropicMessages(messages: ChatMessage[]): AnthropicMessage[] {
   return result;
 }
 
-function toAnthropicTools(tools: ToolDefinition[]): AnthropicTool[] {
-  return tools.map((t) => ({
-    name: t.function.name,
-    description: t.function.description,
-    input_schema: t.function.parameters,
-  }));
+function toAnthropicTools(
+  tools: ToolDefinition[],
+  builtinTools?: AnthropicBuiltinTools,
+): AnthropicTool[] {
+  const result: AnthropicTool[] = [];
+
+  // Built-in server-side tools
+  if (builtinTools?.web_search) {
+    result.push({ type: "web_search_20250305", name: "web_search" });
+  }
+  if (builtinTools?.code_execution) {
+    result.push({ type: "code_execution_20250522", name: "code_execution" });
+  }
+
+  // Custom function tools
+  for (const t of tools) {
+    result.push({
+      name: t.function.name,
+      description: t.function.description,
+      input_schema: t.function.parameters,
+    });
+  }
+
+  return result;
 }
 
 async function streamAnthropicFromResponse(
@@ -206,6 +226,21 @@ async function streamAnthropicFromResponse(
               })),
             );
           }
+          // Server-side built-in tools (web_search, code_execution)
+          if (blockType === "server_tool_use") {
+            const toolName = event.content_block.name || "";
+            if (toolName === "web_search") {
+              callbacks.onBuiltinToolEvent?.({
+                type: "web_search_start",
+                query: "",
+              });
+            } else if (toolName === "code_execution") {
+              callbacks.onBuiltinToolEvent?.({
+                type: "code_interpreter_start",
+                code: "",
+              });
+            }
+          }
           break;
         }
 
@@ -221,6 +256,27 @@ async function streamAnthropicFromResponse(
             const existing = toolCallsMap.get(currentBlockIndex);
             if (existing) {
               existing.args += delta.partial_json;
+            }
+          }
+          break;
+        }
+
+        case "content_block_stop": {
+          const stoppedBlockType = blockTypes.get(event.index);
+          if (stoppedBlockType === "server_tool_use") {
+            // Emit done event for the server tool
+            // The content_block at stop may have result data
+            const toolName = event.content_block?.name || "";
+            if (toolName === "web_search" || !toolName) {
+              callbacks.onBuiltinToolEvent?.({
+                type: "web_search_done",
+                query: "",
+              });
+            } else if (toolName === "code_execution") {
+              callbacks.onBuiltinToolEvent?.({
+                type: "code_interpreter_done",
+                output: "",
+              });
             }
           }
           break;
@@ -301,8 +357,14 @@ export async function streamAnthropic(
     body.system = systemPrompt;
   }
 
-  if (tools.length > 0) {
-    body.tools = toAnthropicTools(tools);
+  const allTools = toAnthropicTools(tools, config.anthropicBuiltinTools);
+  if (allTools.length > 0) {
+    body.tools = allTools;
+  }
+
+  // Reasoning effort — sent directly, let the API/proxy handle mapping
+  if (config.reasoningEffort && config.reasoningEffort !== "none") {
+    body.reasoning_effort = config.reasoningEffort;
   }
 
   const response = await fetchWithMode(url, {

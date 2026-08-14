@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { textBlocks } from "./content-blocks";
 import { applyImport, type ExportData, type ImportMode } from "./config-io";
 import { db, type Message, type Thread } from "./db";
 import {
@@ -37,7 +38,7 @@ function thread(id: string, configId?: string): Thread {
 }
 
 function message(id: string, threadId: string): Message {
-  return { id, threadId, role: "user", content: id, createdAt: 1 };
+  return { id, threadId, role: "user", content: textBlocks(id), createdAt: 1 };
 }
 
 function importFile(

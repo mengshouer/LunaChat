@@ -34,6 +34,7 @@ interface ChatContextValue {
   profileMissing: boolean;
   searchEnabled: boolean;
   searchAvailable: boolean;
+  builtinSearchActive: boolean;
   toggleSearchEnabled: () => Promise<void>;
   sendMessage: (input: SendMessageInput) => Promise<void>;
   stopStreaming: () => Promise<void>;
@@ -125,6 +126,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
       !keysLocked &&
       hasSearchApiKey(settingsToToolContext(currentSettings, searchEnabled)),
   );
+  const builtinSearchActive = Boolean(
+    (currentSettings?.provider === "openai-responses" &&
+      (currentSettings?.responseBuiltinTools?.web_search ||
+        currentSettings?.responseBuiltinTools?.web_search_preview)) ||
+    (currentSettings?.provider === "anthropic" &&
+      currentSettings?.anthropicBuiltinTools?.web_search),
+  );
   const isConfigured = Boolean(
     currentSettings?.baseUrl && currentSettings?.model && !profileMissing,
   );
@@ -176,6 +184,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         profileMissing,
         searchEnabled,
         searchAvailable,
+        builtinSearchActive,
         toggleSearchEnabled: turn.toggleSearchEnabled,
         sendMessage: turn.sendMessage,
         stopStreaming: turn.stopStreaming,

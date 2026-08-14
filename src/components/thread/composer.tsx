@@ -24,6 +24,8 @@ import {
   toPendingAttachments,
   type PendingAttachment,
 } from "@/lib/attachments";
+import { ReasoningEffortSelector } from "./reasoning-effort-selector";
+import type { ReasoningEffort } from "@/lib/llm/types";
 import {
   getDraftRestoreKey,
   mergeRestoredInput,
@@ -81,11 +83,13 @@ export function Composer({
     profileMissing,
     searchEnabled,
     searchAvailable,
+    builtinSearchActive,
     toggleSearchEnabled,
   } = useChat();
   const [drafts, setDrafts] = useState<Map<string, ComposerDraft>>(
     () => new Map(),
   );
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("high");
   const draftsRef = useRef(drafts);
   const submittingRef = useRef<Set<string>>(new Set());
   const conversationKeyRef = useRef(conversationKey);
@@ -211,7 +215,7 @@ export function Composer({
       submittingRef.current.add(conversationKey);
       updateDraft(conversationKey, () => ({ input: "", attachments: [] }));
       try {
-        await sendMessage({ content: trimmed, attachments: attachmentsToSend });
+        await sendMessage({ content: trimmed, attachments: attachmentsToSend, reasoningEffort });
         attachmentsToSend.forEach((item) =>
           URL.revokeObjectURL(item.previewUrl),
         );
@@ -248,6 +252,7 @@ export function Composer({
       onRequireUnlock,
       updateDraft,
       conversationKey,
+      reasoningEffort,
     ],
   );
 
@@ -302,70 +307,18 @@ export function Composer({
           </div>
         )}
 
-        <div className="flex items-end gap-2">
-          {/* Hidden file input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files) addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            disabled={!isConfigured || isStreaming}
-            onClick={() => fileInputRef.current?.click()}
-            className="shrink-0 size-11"
-          >
-            <Paperclip className="size-4" />
-          </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                disabled={!isConfigured || isStreaming}
-                aria-label="Toggle web search"
-                aria-pressed={searchEnabled}
-                onClick={() =>
-                  void toggleSearchEnabled().catch((error) =>
-                    toast.error(
-                      error instanceof Error
-                        ? error.message
-                        : "Failed to update web search",
-                    ),
-                  )
-                }
-                className="shrink-0 size-11"
-              >
-                <Globe
-                  className={cn(
-                    "size-4 transition-colors",
-                    searchEnabled
-                      ? searchAvailable
-                        ? "text-blue-500"
-                        : "text-amber-500"
-                      : "text-muted-foreground",
-                  )}
-                />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              {keysLocked
-                ? "Unlock API keys to use web search"
-                : !searchAvailable
-                  ? "Add a search API key in Profile settings to use web search"
-                  : searchEnabled
-                    ? "Web search on"
-                    : "Web search off"}
-            </TooltipContent>
-          </Tooltip>
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files) addFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <div className="flex flex-col rounded-xl border border-input bg-background shadow-xs focus-within:ring-1 focus-within:ring-ring">
           <textarea
             ref={textareaRef}
             value={input}
@@ -383,39 +336,104 @@ export function Composer({
                 : !isConfigured
                 ? "Set Base URL and Model first..."
                 : keysLocked
-                  ? "API keys locked — press send to unlock..."
+                  ? "API keys locked \u2014 press send to unlock..."
                   : "Send a message... (Shift+Enter for newline)"
             }
             disabled={!isConfigured}
             rows={1}
-            className="flex-1 resize-none rounded-xl border border-input bg-background px-4 py-[11px] text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px] max-h-[200px] overflow-y-auto"
+            className="resize-none bg-transparent px-4 pt-3 pb-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 min-h-[36px] max-h-[200px] overflow-y-auto"
             style={{ fieldSizing: "content" } as React.CSSProperties}
           />
-          {isStreaming ? (
-            <Button
-              type="button"
-              size="icon"
-              variant="destructive"
-              onClick={() => void stopStreaming()}
-              disabled={turnStatus === "stopping" || turnStatus === "deleting"}
-              className="shrink-0 size-11"
-            >
-              <Square className="size-4" />
-            </Button>
-          ) : (
-            <Button
-              type="submit"
-              size="icon"
-              disabled={
-                (!input.trim() && pendingAttachments.length === 0) ||
-                !isConfigured ||
-                activeTurnCount >= MAX_CONCURRENT_TURNS
-              }
-              className="shrink-0 size-11"
-            >
-              <Send className="size-4" />
-            </Button>
-          )}
+          <div className="flex items-center justify-between px-2 pb-2">
+            <div className="flex items-center gap-0.5">
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                disabled={!isConfigured || isStreaming}
+                onClick={() => fileInputRef.current?.click()}
+                className="shrink-0 size-8"
+              >
+                <Paperclip className="size-4" />
+              </Button>
+              {!builtinSearchActive && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    disabled={!isConfigured || isStreaming}
+                    aria-label="Toggle web search"
+                    aria-pressed={searchEnabled}
+                    onClick={() =>
+                      void toggleSearchEnabled().catch((error) =>
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Failed to update web search",
+                        ),
+                      )
+                    }
+                    className="shrink-0 size-8"
+                  >
+                    <Globe
+                      className={cn(
+                        "size-4 transition-colors",
+                        searchEnabled
+                          ? searchAvailable
+                            ? "text-blue-500"
+                            : "text-amber-500"
+                          : "text-muted-foreground",
+                      )}
+                    />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {keysLocked
+                    ? "Unlock API keys to use web search"
+                    : !searchAvailable
+                      ? "Add a search API key in Profile settings to use web search"
+                      : searchEnabled
+                        ? "Web search on"
+                        : "Web search off"}
+                </TooltipContent>
+              </Tooltip>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <ReasoningEffortSelector
+                value={reasoningEffort}
+                onChange={setReasoningEffort}
+                disabled={!isConfigured || isStreaming}
+              />
+              {isStreaming ? (
+              <Button
+                type="button"
+                size="icon"
+                variant="destructive"
+                onClick={() => void stopStreaming()}
+                disabled={turnStatus === "stopping" || turnStatus === "deleting"}
+                className="shrink-0 size-8 rounded-lg"
+              >
+                <Square className="size-3.5" />
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                size="icon"
+                disabled={
+                  (!input.trim() && pendingAttachments.length === 0) ||
+                  !isConfigured ||
+                  activeTurnCount >= MAX_CONCURRENT_TURNS
+                }
+                className="shrink-0 size-8 rounded-lg"
+              >
+                <Send className="size-3.5" />
+              </Button>
+            )}
+            </div>
+          </div>
         </div>
       </form>
     </div>

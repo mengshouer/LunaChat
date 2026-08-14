@@ -1,4 +1,4 @@
-import type { ProviderType } from "./llm/types";
+import type { ProviderType, ResponseBuiltinTools, AnthropicBuiltinTools } from "./llm/types";
 import type { SearchProviderId } from "./tools/net-search/types";
 
 export type RequestMode = "client" | "server" | "auto";
@@ -18,6 +18,11 @@ export interface Settings {
   searchEnabledByDefault: boolean;
   temperature?: number;
   maxTokens?: number;
+  // OpenAI Responses API specific
+  responseBuiltinTools?: ResponseBuiltinTools;
+  responseStore?: boolean;
+  // Anthropic server-side tools
+  anthropicBuiltinTools?: AnthropicBuiltinTools;
 }
 
 export interface ConfigProfile extends Settings {
@@ -102,7 +107,7 @@ export function normalizeProfile(raw: Partial<ConfigProfile>): ConfigProfile {
     id: typeof value.id === "string" ? value.id : "",
     name: typeof value.name === "string" ? value.name : "Default",
     provider:
-      value.provider === "openai" || value.provider === "anthropic"
+      value.provider === "openai" || value.provider === "anthropic" || value.provider === "openai-responses"
         ? value.provider
         : DEFAULT_SETTINGS.provider,
     baseUrl: stringValue("baseUrl"),
@@ -129,11 +134,26 @@ export function normalizeProfile(raw: Partial<ConfigProfile>): ConfigProfile {
         : DEFAULT_SETTINGS.searchEnabledByDefault,
     ...(temperature !== undefined ? { temperature } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(value.responseBuiltinTools &&
+    typeof value.responseBuiltinTools === "object"
+      ? { responseBuiltinTools: value.responseBuiltinTools as ResponseBuiltinTools }
+      : {}),
+    ...(typeof value.responseStore === "boolean"
+      ? { responseStore: value.responseStore }
+      : {}),
+    ...(value.anthropicBuiltinTools &&
+    typeof value.anthropicBuiltinTools === "object"
+      ? { anthropicBuiltinTools: value.anthropicBuiltinTools as AnthropicBuiltinTools }
+      : {}),
   };
 }
 
 export function validateSettings(settings: Settings): void {
-  if (settings.provider !== "openai" && settings.provider !== "anthropic") {
+  if (
+    settings.provider !== "openai" &&
+    settings.provider !== "anthropic" &&
+    settings.provider !== "openai-responses"
+  ) {
     throw new Error("Unsupported provider protocol");
   }
   if (

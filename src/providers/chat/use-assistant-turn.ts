@@ -1,7 +1,8 @@
 import { useCallback, useReducer, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
-import type { ChatMessage, ToolCall } from "@/lib/llm/types";
+import type { ChatMessage, ToolCall, ReasoningEffort } from "@/lib/llm/types";
 import type { ConfigProfile } from "@/lib/settings-types";
+import { textBlocks } from "@/lib/content-blocks";
 import {
   type Message as DBMessage,
   type Thread,
@@ -37,7 +38,7 @@ import {
 
 export type SendMessageInput =
   | string
-  | { content: string; attachments?: PendingAttachment[] };
+  | { content: string; attachments?: PendingAttachment[]; reasoningEffort?: ReasoningEffort };
 
 interface TurnSession {
   turnId: string;
@@ -54,6 +55,7 @@ interface TurnSession {
   thinkingEndTime: number | null;
   settings: Settings;
   searchEnabled: boolean;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface TurnDeps {
@@ -247,7 +249,7 @@ export function useAssistantTurn(deps: TurnDeps) {
           threadId: session.threadId,
           role: "assistant",
           name: "error",
-          content: message.trim() || "Unknown error",
+          content: textBlocks(message.trim() || "Unknown error"),
           createdAt: Date.now(),
           parentId: lastMessageId,
         });
@@ -260,7 +262,15 @@ export function useAssistantTurn(deps: TurnDeps) {
           session.controller.signal,
         );
         const toolRegistry = createToolRegistry(toolContext);
-        const effectiveSearchEnabled = isSearchToolEnabled(toolContext);
+        // Search is available either via local net_search tool or via built-in web_search
+        const builtinSearchEnabled =
+          (session.settings.provider === "openai-responses" &&
+            !!(session.settings.responseBuiltinTools?.web_search ||
+              session.settings.responseBuiltinTools?.web_search_preview)) ||
+          (session.settings.provider === "anthropic" &&
+            !!session.settings.anthropicBuiltinTools?.web_search);
+        const effectiveSearchEnabled =
+          isSearchToolEnabled(toolContext) || builtinSearchEnabled;
         const systemPrompt = buildSystemPrompt(
           session.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
           effectiveSearchEnabled,
@@ -274,6 +284,10 @@ export function useAssistantTurn(deps: TurnDeps) {
             requestMode: session.settings.requestMode,
             temperature: session.settings.temperature,
             maxTokens: session.settings.maxTokens,
+            responseBuiltinTools: session.settings.responseBuiltinTools,
+            responseStore: session.settings.responseStore,
+            anthropicBuiltinTools: session.settings.anthropicBuiltinTools,
+            reasoningEffort: session.reasoningEffort,
           },
           chatMessages,
           toolRegistry,
@@ -301,7 +315,7 @@ export function useAssistantTurn(deps: TurnDeps) {
               if (session.controller.signal.aborted)
                 throw new Error("Aborted");
               if (
-                !assistantMessage.content &&
+                !assistantMessage.content.trim() &&
                 !assistantMessage.toolCalls?.length &&
                 !assistantMessage.reasoningContent
               ) {
@@ -312,7 +326,7 @@ export function useAssistantTurn(deps: TurnDeps) {
                 id: uuidv4(),
                 threadId: session.threadId,
                 role: "assistant",
-                content: assistantMessage.content,
+                content: textBlocks(assistantMessage.content),
                 toolCalls: assistantMessage.toolCalls,
                 createdAt: Date.now(),
                 parentId: lastMessageId,
@@ -332,7 +346,7 @@ export function useAssistantTurn(deps: TurnDeps) {
                 id: uuidv4(),
                 threadId: session.threadId,
                 role: "tool",
-                content: result,
+                content: textBlocks(result),
                 toolCallId,
                 name,
                 createdAt: Date.now(),
@@ -355,7 +369,7 @@ export function useAssistantTurn(deps: TurnDeps) {
             id: uuidv4(),
             threadId: session.threadId,
             role: "assistant",
-            content: session.content,
+            content: textBlocks(session.content),
             createdAt: Date.now(),
             parentId: lastMessageId,
             ...(session.thinking
@@ -400,6 +414,8 @@ export function useAssistantTurn(deps: TurnDeps) {
       const content = typeof input === "string" ? input : (input.content ?? "");
       const pendingAttachments =
         typeof input === "string" ? [] : (input.attachments ?? []);
+      const inputReasoningEffort =
+        typeof input === "string" ? undefined : input.reasoningEffort;
       const selectedThreadId = currentThreadId;
       const conversationId = currentConversationId;
       const thread = selectedThreadId
@@ -413,6 +429,7 @@ export function useAssistantTurn(deps: TurnDeps) {
         turnConfig.settings,
         turnConfig.searchEnabled,
       );
+      session.reasoningEffort = inputReasoningEffort;
 
       let userMessageCommitted = false;
       try {
@@ -442,7 +459,7 @@ export function useAssistantTurn(deps: TurnDeps) {
           id: uuidv4(),
           threadId: conversationId,
           role: "user",
-          content,
+          content: textBlocks(content),
           createdAt: Date.now(),
           parentId:
             priorPath.length > 0
@@ -605,7 +622,7 @@ export function useAssistantTurn(deps: TurnDeps) {
           id: uuidv4(),
           threadId: thread.id,
           role: "user",
-          content: newContent,
+          content: textBlocks(newContent),
           createdAt: Date.now(),
           parentId: original.parentId ?? null,
           ...(attachments.length > 0 ? { attachments } : {}),

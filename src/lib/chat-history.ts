@@ -1,6 +1,7 @@
 import type { Message as DBMessage } from "./db";
 import type { ChatMessage, ToolCall } from "./llm/types";
 import type { Attachment } from "./attachments";
+import { blocksToText, textBlocks } from "./content-blocks";
 
 // Normalizes a persisted active-branch path into a valid LLM replay sequence:
 //   1. Drops error messages (persisted assistant messages with name==="error")
@@ -23,7 +24,7 @@ export function normalizeHistoryPath(path: DBMessage[]): DBMessage[] {
     if (m.name === "error") return false;
     // Drop assistant messages with nothing to replay: blank content and no
     // tool calls (a thinking-only Stop partial, or an empty final turn).
-    if (!m.content.trim() && !m.toolCalls?.length) return false;
+    if (!blocksToText(m.content).trim() && !m.toolCalls?.length) return false;
     return true;
   });
 
@@ -59,9 +60,9 @@ export function normalizeHistoryPath(path: DBMessage[]): DBMessage[] {
             id: `${tc.id}-interrupted`,
             threadId: m.threadId,
             role: "tool",
-            content: JSON.stringify({
+            content: textBlocks(JSON.stringify({
               error: "Tool execution was interrupted",
-            }),
+            })),
             toolCallId: tc.id,
             name: tc.name,
             createdAt: m.createdAt,
@@ -107,7 +108,7 @@ export function buildHistory(path: DBMessage[]): ChatMessage[] {
     );
     return {
       role: m.role,
-      content: buildLLMContent(m.content, textAttachments),
+      content: buildLLMContent(blocksToText(m.content), textAttachments),
       toolCalls: m.toolCalls as ToolCall[] | undefined,
       toolCallId: m.toolCallId,
       name: m.name,

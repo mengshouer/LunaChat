@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { textBlocks } from "./content-blocks";
 import {
   addMessage,
   createThreadWithFirstMessage,
@@ -23,7 +24,7 @@ function message(
     id,
     threadId,
     role: "user",
-    content: id,
+    content: textBlocks(id),
     createdAt: 1,
     ...overrides,
   };
