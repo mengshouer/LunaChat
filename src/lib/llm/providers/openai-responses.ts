@@ -145,7 +145,8 @@ async function streamResponsesFromResponse(
 
   const reader = response.body!.getReader();
   let fullContent = "";
-  const toolCallsMap = new Map<string, { id: string; name: string; args: string }>();
+  // Key by item_id (fc_xxx), store call_id separately for function_call_output
+  const toolCallsMap = new Map<string, { id: string; callId: string; name: string; args: string }>();
   const currentCitations: Citation[] = [];
   let citationIndex = 0;
 
@@ -261,31 +262,36 @@ async function streamResponsesFromResponse(
 
         // Function call (custom tool) argument deltas
         case "response.function_call_arguments.delta": {
-          const callId = event.call_id ?? event.item_id ?? "";
+          // item_id is the stable key (fc_xxx); call_id may not be present here
+          const itemId = event.item_id ?? event.call_id ?? "";
           const delta = event.delta ?? "";
-          if (!toolCallsMap.has(callId)) {
-            toolCallsMap.set(callId, {
-              id: callId,
+          if (!toolCallsMap.has(itemId)) {
+            toolCallsMap.set(itemId, {
+              id: itemId,
+              callId: event.call_id ?? itemId,
               name: event.name ?? "",
               args: "",
             });
           }
-          const existing = toolCallsMap.get(callId)!;
+          const existing = toolCallsMap.get(itemId)!;
           if (event.name) existing.name = event.name;
+          if (event.call_id) existing.callId = event.call_id;
           existing.args += delta;
           break;
         }
         case "response.function_call_arguments.done": {
-          const callId = event.call_id ?? event.item_id ?? "";
-          if (!toolCallsMap.has(callId)) {
-            toolCallsMap.set(callId, {
-              id: callId,
+          const itemId = event.item_id ?? event.call_id ?? "";
+          if (!toolCallsMap.has(itemId)) {
+            toolCallsMap.set(itemId, {
+              id: itemId,
+              callId: event.call_id ?? itemId,
               name: event.name ?? "",
               args: event.arguments ?? "",
             });
           } else {
-            const existing = toolCallsMap.get(callId)!;
+            const existing = toolCallsMap.get(itemId)!;
             if (event.name) existing.name = event.name;
+            if (event.call_id) existing.callId = event.call_id;
             if (event.arguments) existing.args = event.arguments;
           }
           break;
@@ -295,18 +301,24 @@ async function streamResponsesFromResponse(
         case "response.output_item.added": {
           const item = event.item ?? {};
           if (item.type === "function_call") {
-            const callId = item.call_id ?? item.id ?? "";
-            if (!toolCallsMap.has(callId)) {
-              toolCallsMap.set(callId, {
-                id: callId,
+            // Use item.id (fc_xxx) as the stable map key
+            const itemId = item.id ?? item.call_id ?? "";
+            if (!toolCallsMap.has(itemId)) {
+              toolCallsMap.set(itemId, {
+                id: itemId,
+                callId: item.call_id ?? itemId,
                 name: item.name ?? "",
                 args: "",
               });
+            } else {
+              const existing = toolCallsMap.get(itemId)!;
+              if (item.name) existing.name = item.name;
+              if (item.call_id) existing.callId = item.call_id;
             }
             // Early indication
             callbacks.onToolCall(
               Array.from(toolCallsMap.values()).map((tc) => ({
-                id: tc.id,
+                id: tc.callId,
                 name: tc.name,
                 args: {},
               })),
@@ -330,7 +342,7 @@ async function streamResponsesFromResponse(
     }
   }
 
-  // Build final tool calls
+  // Build final tool calls — use call_id as the external id (needed for function_call_output)
   const toolCalls: ToolCall[] = Array.from(toolCallsMap.values()).map((tc) => {
     let args: Record<string, unknown> = {};
     try {
@@ -338,7 +350,7 @@ async function streamResponsesFromResponse(
     } catch {
       // pass
     }
-    return { id: tc.id, name: tc.name, args };
+    return { id: tc.callId, name: tc.name, args };
   });
 
   if (toolCalls.length > 0) {

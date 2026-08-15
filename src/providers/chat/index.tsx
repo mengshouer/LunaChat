@@ -61,6 +61,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     currentThreadId,
     currentConversationId,
     draftThreadId,
+    draftProfileId,
     activateDraftThread,
     syncAfterDelete,
     switchThread,
@@ -109,8 +110,13 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     if (currentThread?.configId) {
       return profiles.find((profile) => profile.id === currentThread.configId);
     }
-    return activeProfile;
-  }, [activeProfile, currentThread?.configId, profiles]);
+    // For drafts (no thread), prefer the local draft override over global default.
+    // For threads without configId (legacy), use the global default.
+    const effectiveId = currentThreadId
+      ? activeProfileId
+      : (draftProfileId ?? activeProfileId);
+    return profiles.find((profile) => profile.id === effectiveId) ?? activeProfile;
+  }, [activeProfile, currentThread?.configId, currentThreadId, draftProfileId, activeProfileId, profiles]);
   const profileMissing = Boolean(currentThread?.configId && !currentProfile);
   const currentSettings = useMemo(
     () => (currentProfile ? profileToSettings(currentProfile) : null),
@@ -142,6 +148,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
     currentThreadId,
     currentConversationId,
     draftThreadId,
+    draftProfileId,
     profiles,
     activeProfileId,
     keysLocked,

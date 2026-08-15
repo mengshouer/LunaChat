@@ -62,6 +62,7 @@ export interface TurnDeps {
   currentThreadId: string | null;
   currentConversationId: string;
   draftThreadId: string;
+  draftProfileId: string | null;
   profiles: ConfigProfile[];
   activeProfileId: string | null;
   keysLocked: boolean;
@@ -96,6 +97,7 @@ export function useAssistantTurn(deps: TurnDeps) {
     currentThreadId,
     currentConversationId,
     draftThreadId,
+    draftProfileId,
     profiles,
     activeProfileId,
     keysLocked,
@@ -173,9 +175,17 @@ export function useAssistantTurn(deps: TurnDeps) {
 
   const resolveTurnConfig = useCallback(
     (thread: Thread | undefined) => {
-      const profile = thread?.configId
-        ? profiles.find((item) => item.id === thread.configId)
-        : profiles.find((item) => item.id === activeProfileId);
+      let profileId: string | null;
+      if (thread?.configId) {
+        profileId = thread.configId;
+      } else if (thread) {
+        // Existing thread without configId (legacy) — use global default
+        profileId = activeProfileId;
+      } else {
+        // Draft — prefer local draft override
+        profileId = draftProfileId ?? activeProfileId;
+      }
+      const profile = profiles.find((item) => item.id === profileId);
       if (!profile) {
         throw new Error(
           thread?.configId
@@ -195,7 +205,7 @@ export function useAssistantTurn(deps: TurnDeps) {
       });
       return { profile, settings, searchEnabled: turnSearchEnabled };
     },
-    [activeProfileId, draftThreadId, keysLocked, profiles, draftSearchOverridesRef],
+    [activeProfileId, draftProfileId, draftThreadId, keysLocked, profiles, draftSearchOverridesRef],
   );
 
   const runAssistantTurn = useCallback(

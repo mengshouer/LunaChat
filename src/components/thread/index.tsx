@@ -47,11 +47,12 @@ export function Thread() {
     currentThreadId,
     currentConversationId,
     draftThreadId,
+    draftProfileId,
     openNewChat,
     bindCurrentThreadProfile,
     threads,
   } = useThreads();
-  const { profiles, activeProfileId } = useSettings();
+  const { profiles, activeProfileId, switchProfile } = useSettings();
   const [hideToolCalls, setHideToolCalls] = useState(false);
   // SSR and first client render both default to closed so the header toggle
   // matches the server HTML (no hydration mismatch). The sidebar is then
@@ -92,7 +93,8 @@ export function Thread() {
     () => threads.find((thread) => thread.id === currentThreadId),
     [currentThreadId, threads],
   );
-  const selectedProfileId = currentThread?.configId ?? activeProfileId;
+  const selectedProfileId = currentThread?.configId
+    ?? (currentThreadId ? activeProfileId : (draftProfileId ?? activeProfileId));
   const validConversationIds = useMemo(
     () => [...threads.map((thread) => thread.id), draftThreadId],
     [draftThreadId, threads],
@@ -139,10 +141,18 @@ export function Thread() {
           onOpenSecurity={() => setSecurityOpen(true)}
           profiles={profiles}
           selectedProfileId={selectedProfileId}
+          defaultProfileId={activeProfileId}
           onSelectProfile={(id) =>
             void bindCurrentThreadProfile(id).catch((error) =>
               toast.error(
                 error instanceof Error ? error.message : "Failed to select profile",
+              ),
+            )
+          }
+          onSetDefaultProfile={(id) =>
+            void switchProfile(id).catch((error) =>
+              toast.error(
+                error instanceof Error ? error.message : "Failed to set default profile",
               ),
             )
           }

@@ -12,7 +12,7 @@ function json(data: unknown, status = 200) {
 }
 
 function isProviderType(value: unknown): value is ProviderType {
-  return value === "openai" || value === "anthropic";
+  return value === "openai" || value === "openai-responses" || value === "anthropic";
 }
 
 export async function POST(request: NextRequest) {

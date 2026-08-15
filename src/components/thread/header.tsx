@@ -12,6 +12,8 @@ import {
   Wrench,
   Sun,
   Moon,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,7 +39,9 @@ export function ThreadHeader({
   onOpenSecurity,
   profiles,
   selectedProfileId,
+  defaultProfileId,
   onSelectProfile,
+  onSetDefaultProfile,
   transfer,
 }: {
   historyOpen: boolean;
@@ -50,7 +54,9 @@ export function ThreadHeader({
   onOpenSecurity: () => void;
   profiles: Array<{ id: string; name: string }>;
   selectedProfileId: string | null;
+  defaultProfileId: string | null;
   onSelectProfile: (id: string) => void;
+  onSetDefaultProfile: (id: string) => void;
   transfer: ConfigTransfer;
 }) {
   const { resolvedTheme, toggleTheme } = useTheme();
@@ -77,7 +83,7 @@ export function ThreadHeader({
       <div className="flex items-center gap-1">
         {/* Profile switcher */}
         <select
-          className="border-input bg-background text-xs rounded-md border px-2 py-1 max-w-[140px] truncate mr-1"
+          className="border-input bg-background text-xs rounded-md border px-2 py-1 max-w-[140px] truncate"
           value={selectedProfileId ?? ""}
           onChange={(e) => onSelectProfile(e.target.value)}
         >
@@ -91,6 +97,28 @@ export function ThreadHeader({
             </option>
           ))}
         </select>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7"
+          title={
+            selectedProfileId === defaultProfileId
+              ? "Current default for new chats"
+              : "Set as default for new chats"
+          }
+          onClick={() => {
+            if (selectedProfileId && selectedProfileId !== defaultProfileId) {
+              onSetDefaultProfile(selectedProfileId);
+            }
+          }}
+          disabled={!selectedProfileId || selectedProfileId === defaultProfileId}
+        >
+          {selectedProfileId === defaultProfileId ? (
+            <Pin className="size-3.5 fill-current" />
+          ) : (
+            <PinOff className="size-3.5" />
+          )}
+        </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" title="More actions">

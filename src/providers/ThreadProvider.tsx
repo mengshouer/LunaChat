@@ -22,6 +22,7 @@ interface ThreadContextValue {
   threads: Thread[];
   currentThreadId: string | null;
   draftThreadId: string;
+  draftProfileId: string | null;
   currentConversationId: string;
   isLoading: boolean;
   switchThread: (id: string) => void;
@@ -40,11 +41,12 @@ export function ThreadProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [threadId, setThreadId] = useQueryState("threadId");
   const [draftThreadId, setDraftThreadId] = useState(() => uuidv4());
+  const [draftProfileId, setDraftProfileId] = useState<string | null>(null);
   const threadIdRef = useRef(threadId);
   const draftThreadIdRef = useRef(draftThreadId);
   threadIdRef.current = threadId;
   draftThreadIdRef.current = draftThreadId;
-  const { switchProfile, getProfileById } = useSettings();
+  const { getProfileById } = useSettings();
 
   const refreshThreads = useCallback(async () => {
     try {
@@ -68,6 +70,7 @@ export function ThreadProvider({ children }: { children: React.ReactNode }) {
       draftThreadIdRef.current = nextDraftId;
       setThreadId(null);
       setDraftThreadId(nextDraftId);
+      setDraftProfileId(null);
     }
   }, [isLoading, setThreadId, threadId, threads]);
 
@@ -88,6 +91,7 @@ export function ThreadProvider({ children }: { children: React.ReactNode }) {
     draftThreadIdRef.current = nextDraftId;
     setThreadId(null);
     setDraftThreadId(nextDraftId);
+    setDraftProfileId(null);
   }, [setThreadId]);
 
   const activateDraftThread = useCallback(
@@ -109,6 +113,7 @@ export function ThreadProvider({ children }: { children: React.ReactNode }) {
         draftThreadIdRef.current = nextDraftId;
         setThreadId(null);
         setDraftThreadId(nextDraftId);
+        setDraftProfileId(null);
       }
       await refreshThreads();
     },
@@ -125,13 +130,13 @@ export function ThreadProvider({ children }: { children: React.ReactNode }) {
 
   // The header's profile picker always targets the conversation on screen: an
   // open thread gets its own binding rewritten, while a draft has nothing to
-  // bind yet, so it sets the default that new chats start from.
+  // bind yet, so it only sets the local draft override (not the global default).
   const bindCurrentThreadProfile = useCallback(
     async (profileId: string) => {
       if (!getProfileById(profileId)) throw new Error("Profile does not exist");
       const selectedThreadId = threadIdRef.current;
       if (!selectedThreadId) {
-        await switchProfile(profileId);
+        setDraftProfileId(profileId);
         return;
       }
       await setThreadConfigId(selectedThreadId, profileId);
@@ -143,7 +148,7 @@ export function ThreadProvider({ children }: { children: React.ReactNode }) {
         ),
       );
     },
-    [getProfileById, switchProfile],
+    [getProfileById],
   );
 
   return (
@@ -152,6 +157,7 @@ export function ThreadProvider({ children }: { children: React.ReactNode }) {
         threads,
         currentThreadId: threadId,
         draftThreadId,
+        draftProfileId,
         currentConversationId: threadId ?? draftThreadId,
         isLoading,
         switchThread,
