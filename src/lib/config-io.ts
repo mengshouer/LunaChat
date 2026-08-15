@@ -244,9 +244,10 @@ export function parseImportProfiles(data: ExportData): ConfigProfile[] {
     if (
       raw.provider !== undefined &&
       raw.provider !== "openai" &&
+      raw.provider !== "openai-responses" &&
       raw.provider !== "anthropic"
     ) {
-      throw new Error("Invalid profile field: provider");
+      raw.provider = "openai";
     }
     if (
       raw.searchProvider !== undefined &&
