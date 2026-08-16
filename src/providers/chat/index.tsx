@@ -28,6 +28,7 @@ interface ChatContextValue {
   streamingThinking: string;
   thinkingStartTime: number | null;
   streamingToolCalls: ToolCall[];
+  streamingBuiltinStatus: string;
   error: string | null;
   isConfigured: boolean;
   keysLocked: boolean;
@@ -185,6 +186,7 @@ export function ChatProvider({ children }: { children: React.ReactNode }) {
         streamingThinking: visibleSession?.thinking ?? "",
         thinkingStartTime: visibleSession?.thinkingStartTime ?? null,
         streamingToolCalls: visibleSession?.toolCalls ?? [],
+        streamingBuiltinStatus: visibleSession?.builtinStatus ?? "",
         error,
         isConfigured,
         keysLocked,

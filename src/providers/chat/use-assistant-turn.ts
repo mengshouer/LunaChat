@@ -53,6 +53,7 @@ interface TurnSession {
   thinking: string;
   thinkingStartTime: number | null;
   thinkingEndTime: number | null;
+  builtinStatus: string;
   settings: Settings;
   searchEnabled: boolean;
   reasoningEffort?: ReasoningEffort;
@@ -153,6 +154,7 @@ export function useAssistantTurn(deps: TurnDeps) {
         thinking: "",
         thinkingStartTime: null,
         thinkingEndTime: null,
+        builtinStatus: "",
         settings: { ...settings },
         searchEnabled: turnSearchEnabled,
       };
@@ -243,6 +245,7 @@ export function useAssistantTurn(deps: TurnDeps) {
         session.thinking = "";
         session.thinkingStartTime = null;
         session.thinkingEndTime = null;
+        session.builtinStatus = "";
         forceUpdate();
       };
       const persistMessage = async (message: DBMessage) => {
@@ -319,6 +322,35 @@ export function useAssistantTurn(deps: TurnDeps) {
             },
             onToolCallStart: (toolCalls) => {
               session.toolCalls = toolCalls;
+              scheduleUpdate();
+            },
+            onBuiltinToolEvent: (event) => {
+              switch (event.type) {
+                case "web_search_start":
+                  session.builtinStatus = "Searching the web...";
+                  break;
+                case "web_search_done":
+                  session.builtinStatus = "";
+                  break;
+                case "file_search_start":
+                  session.builtinStatus = "Searching files...";
+                  break;
+                case "file_search_done":
+                  session.builtinStatus = "";
+                  break;
+                case "image_generation_start":
+                  session.builtinStatus = "Generating image...";
+                  break;
+                case "image_generation_done":
+                  session.builtinStatus = "";
+                  break;
+                case "code_interpreter_start":
+                  session.builtinStatus = "Running code...";
+                  break;
+                case "code_interpreter_done":
+                  session.builtinStatus = "";
+                  break;
+              }
               scheduleUpdate();
             },
             onAssistantMessage: async (assistantMessage) => {

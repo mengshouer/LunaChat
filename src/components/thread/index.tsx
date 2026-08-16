@@ -34,6 +34,7 @@ export function Thread() {
     streamingThinking,
     thinkingStartTime,
     streamingToolCalls,
+    streamingBuiltinStatus,
     regenerate,
     editMessage,
     switchBranch,
@@ -242,7 +243,10 @@ export function Thread() {
 
               {isStreaming &&
                 !streamingContent &&
-                streamingToolCalls.length === 0 && <AssistantMessageLoading />}
+                !streamingThinking &&
+                streamingToolCalls.length === 0 && (
+                  <AssistantMessageLoading status={streamingBuiltinStatus} />
+                )}
             </div>
           </div>
         </div>
