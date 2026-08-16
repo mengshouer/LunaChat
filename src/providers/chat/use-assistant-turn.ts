@@ -15,6 +15,7 @@ import {
   getThread,
   setActiveLeaf,
   setThreadSearchEnabled,
+  updateMessageContent,
   updateThread,
 } from "@/lib/db";
 import { findLatestLeaf, getActivePath, getSiblings } from "@/lib/message-tree";
@@ -660,22 +661,71 @@ export function useAssistantTurn(deps: TurnDeps) {
         ) {
           throw new Error("Aborted");
         }
-        const newMessage: DBMessage = {
-          id: uuidv4(),
-          threadId: thread.id,
-          role: "user",
-          content: textBlocks(newContent),
-          createdAt: Date.now(),
-          parentId: original.parentId ?? null,
-          ...(attachments.length > 0 ? { attachments } : {}),
-        };
-        const chatHistory = buildHistory(
-          getActivePath([...allMessages, newMessage], newMessage.id),
+
+        // If the original message has no children (e.g. empty/aborted response),
+        // edit in-place instead of creating a branch.
+        const hasChildren = allMessages.some(
+          (m) => m.parentId === messageId,
         );
-        await addMessage(newMessage);
-        editedMessageCommitted = true;
-        appendMessageLocal(newMessage);
-        await runAssistantTurn(session, chatHistory, newMessage.id);
+
+        let effectiveMessageId: string;
+        let messagesSnapshot: DBMessage[];
+
+        if (!hasChildren) {
+          // In-place update
+          const updatedContent = textBlocks(newContent);
+          const updatedAttachments = attachments.length > 0 ? attachments : undefined;
+          await updateMessageContent(
+            messageId,
+            thread.id,
+            updatedContent,
+            updatedAttachments,
+          );
+          editedMessageCommitted = true;
+          effectiveMessageId = messageId;
+          const updatedMessage: DBMessage = {
+            ...original,
+            content: updatedContent,
+            attachments: updatedAttachments,
+            createdAt: Date.now(),
+          };
+          appendMessageLocal(updatedMessage);
+          messagesSnapshot = allMessages.map((m) =>
+            m.id === messageId ? updatedMessage : m,
+          );
+        } else {
+          // Create a new branch
+          const newMessage: DBMessage = {
+            id: uuidv4(),
+            threadId: thread.id,
+            role: "user",
+            content: textBlocks(newContent),
+            createdAt: Date.now(),
+            parentId: original.parentId ?? null,
+            ...(attachments.length > 0 ? { attachments } : {}),
+          };
+          await addMessage(newMessage);
+          editedMessageCommitted = true;
+          effectiveMessageId = newMessage.id;
+          appendMessageLocal(newMessage);
+          messagesSnapshot = [...allMessages, newMessage];
+        }
+
+        const chatHistory = buildHistory(
+          getActivePath(messagesSnapshot, effectiveMessageId),
+        );
+        // Fire-and-forget: let the assistant turn run in the background
+        // so the edit UI can close immediately.
+        runAssistantTurn(session, chatHistory, effectiveMessageId).catch(
+          (caught) => {
+            if (isOwner(session)) finishSession(session);
+            const message =
+              caught instanceof Error ? caught.message : String(caught);
+            console.error("Assistant turn failed after edit:", caught);
+            if (currentConversationIdRef.current === thread.id)
+              setError(message);
+          },
+        );
       } catch (caught) {
         if (isOwner(session)) finishSession(session);
         if (editedMessageCommitted) {

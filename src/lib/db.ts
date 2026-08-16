@@ -152,10 +152,27 @@ export async function deleteThread(id: string): Promise<void> {
 }
 
 // `bindConfigId` binds the thread to a profile as part of appending its first
-// message. Both the "is it still unbound?" check and the write happen inside
-// the message transaction, so two concurrent first sends cannot each decide
-// they are the one doing the binding, and a failed message append cannot leave
-// a thread bound to a profile it never used.
+// Update an existing message in-place (e.g. user edits with no children).
+export async function updateMessageContent(
+  messageId: string,
+  threadId: string,
+  content: ContentBlock[],
+  attachments?: Attachment[],
+): Promise<void> {
+  await db.transaction("rw", [db.threads, db.messages], async () => {
+    await db.messages.update(messageId, {
+      content,
+      attachments,
+      createdAt: Date.now(),
+    });
+    await db.threads.update(threadId, {
+      updatedAt: Date.now(),
+      activeLeafId: messageId,
+    });
+  });
+}
+
+// A thread's first message write also binds the profile when the thread has no
 export async function addMessage(
   message: Message,
   bindConfigId?: string,

@@ -54,11 +54,16 @@ export function useThreadMessages(
 
   const appendMessageLocal = useCallback((message: DBMessage) => {
     if (currentConversationIdRef.current !== message.threadId) return;
-    setAllMessages((current) =>
-      current.some((item) => item.id === message.id)
-        ? current
-        : [...current, message],
-    );
+    setAllMessages((current) => {
+      const idx = current.findIndex((item) => item.id === message.id);
+      if (idx >= 0) {
+        // Replace existing message (in-place edit)
+        const next = [...current];
+        next[idx] = message;
+        return next;
+      }
+      return [...current, message];
+    });
     setActiveLeafId(message.id);
   }, []);
 
