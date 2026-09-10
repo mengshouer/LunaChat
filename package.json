@@ -51,10 +51,10 @@
     "eslint": "9.39.4",
     "eslint-config-next": "^15.5.20",
     "fake-indexeddb": "^6.2.5",
-    "next": "^15.2.3",
+    "next": "^16.3.4",
     "postcss": "^8.5.3",
     "tailwindcss": "^4.0.13",
     "typescript": "~5.7.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
